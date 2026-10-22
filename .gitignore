@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Secrets. Credentials live in the environment, never in the repo.
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+
+# Local captures and generated reports.
+capture*.txt
+*.capture
+recordings/
+reports/

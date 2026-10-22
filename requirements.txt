@@ -1,0 +1,7 @@
+# Core analytics engine: pure stdlib, no dependencies.
+
+# Live market data (only needed for live_feed.py without --replay).
+websocket-client>=1.7
+
+# Test and diagnostics extras.
+pytest>=8.0
