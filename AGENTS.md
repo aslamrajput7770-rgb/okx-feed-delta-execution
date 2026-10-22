@@ -146,3 +146,17 @@ usable for preflight without Trading.
 
 **Python 3.10 or newer is required.** `dataclass(slots=True)` is a syntax error
 on 3.9, which is what Amazon Linux 2023 ships as `python3`.
+
+**The same key resolves differently per host, which identifies its environment.**
+Tested with the same credentials on both hosts from a whitelisted IP:
+
+    testnet  cdn-ind.testnet.deltaex.org  -> invalid_api_key
+    live     api.india.delta.exchange     -> Signature Mismatch
+
+`invalid_api_key` means the key does not exist on that host; `Signature
+Mismatch` means the key was found and only the secret was wrong. So a key that
+answers `invalid_api_key` on testnet and `Signature Mismatch` on live is a
+**production key**, and the preflight must be given `--live` for it. The reverse
+pattern identifies a testnet key.
+
+Both hosts are reachable from an AWS ap-south-1 host.
