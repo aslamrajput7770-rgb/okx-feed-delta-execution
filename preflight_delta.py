@@ -86,19 +86,35 @@ def check_signature(client: DeltaOrderClient) -> tuple[str, str]:
         return PASS, "venue accepted the signature on GET /v2/profile"
     if status == 401:
         detail = str(result.get("detail") or result.get("response"))
-        hint = ""
-        if "signature" in detail.lower():
-            hint = (
+        low = detail.lower()
+        # Order matters. The venue returns a *different* code when the key is
+        # valid but the calling IP is not whitelisted, and that is the more
+        # specific answer. Verified against the live host: a real key returns
+        # ip_not_whitelisted_for_api_key while a garbage key returns
+        # invalid_api_key, so the code is a reliable signal that the key exists.
+        if "ip_not_whitelisted" in low or "ip_blocked" in low:
+            return FAIL, (
+                f"401 from the venue: {detail}"
+                " -> the KEY IS VALID, but this machine's IP is not on the key's "
+                "whitelist. The venue reports the calling IP in the error. Either "
+                "add that IP in Delta > AlgoHub > API > whitelisted IP, or run "
+                "from a host with a static IP. Note that a sandbox IP changes on "
+                "restart, so whitelisting it is only a temporary fix."
+            )
+        if "signature" in low:
+            return FAIL, (
+                f"401 from the venue: {detail}"
                 " -> the signing algorithm does not match this venue. Stop here; "
                 "do not place orders until this passes."
             )
-        elif "key" in detail.lower() or "unauthor" in detail.lower():
-            hint = (
-                " -> the key was rejected. Check it belongs to the same "
-                "environment (testnet keys only work on the testnet host) and "
-                "that it has Read Data permission."
+        if "key" in low or "unauthor" in low:
+            return FAIL, (
+                f"401 from the venue: {detail}"
+                " -> the key was rejected as unknown. Check that the key and "
+                "secret are a matched pair from the same environment (testnet "
+                "keys only work on the testnet host)."
             )
-        return FAIL, f"401 from the venue: {detail}{hint}"
+        return FAIL, f"401 from the venue: {detail}"
     return FAIL, f"unexpected response: {result}"
 
 
