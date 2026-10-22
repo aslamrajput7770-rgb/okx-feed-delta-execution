@@ -71,6 +71,13 @@ by hand: expected `ad767fead0bdbe91...`, computed `4e38dda3e6477092...`). The
 implementation follows the prose description. Confirm it with
 `verify_signature_against_venue()` on testnet before placing a real order.
 
+**The venue clock is only advisory.** Delta publishes no `/v2/time` endpoint
+(both hosts 404), so `server_time()` reads the HTTP `Date` header. The live host
+is behind CloudFront, and a cache hit serves the `Date` of the *cached*
+response, so the reading can be minutes stale. `check_clock()` is therefore a
+sanity check, not a guarantee. Sync with NTP and treat the venue's
+`signature_expired` rejection as the authoritative signal.
+
 **No hedging leg.** OKX is a signal source only; nothing is traded there. The
 position is directional and carries basis risk. The docs and the README say so
 and should keep saying so.

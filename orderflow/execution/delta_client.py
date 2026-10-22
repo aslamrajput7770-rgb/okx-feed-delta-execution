@@ -227,6 +227,7 @@ class DeltaOrderClient:
         timeout: float = 10.0,
         clock=None,
         sender=None,
+        head_sender=None,
     ) -> None:
         self.environment = environment
         self.allow_live = allow_live
@@ -238,6 +239,7 @@ class DeltaOrderClient:
         #: Injectable transport, so tests exercise the real signing and payload
         #: path without touching the network.
         self._sender = sender or self._http_send
+        self._head_sender = head_sender
         self.base_url = BASE_URLS[environment]
 
         # Credentials are only demanded when they will actually be used. A dry
@@ -273,17 +275,26 @@ class DeltaOrderClient:
 
     # ------------------------------------------------------------------- clock
     def server_time(self) -> float:
-        """The venue's clock, in epoch seconds.
+        """The venue's clock, read from the HTTP `Date` response header.
 
-        Used to detect skew before signing. A skewed clock produces a
-        `signature_expired` rejection that reads like an auth failure, and the
-        real cause is easy to miss.
+        Delta publishes no `/v2/time` endpoint (checked: it 404s on both hosts),
+        so the response header is the only clock the venue offers.
+
+        Caveat, and it is a real one: the live host sits behind CloudFront, and
+        a cache hit carries the `Date` of the *cached* response, which can be
+        minutes old. A stale header makes the computed skew meaningless, so this
+        value is advisory. The authoritative signal is the venue's own
+        `signature_expired` rejection, which `place_order` surfaces explicitly.
+        For a trustworthy clock, sync with NTP (`chronyc makestep`) and treat
+        this as a sanity check only.
         """
-        url = f"{self.base_url}/v2/time"
-        req = urllib.request.Request(url, headers={"User-Agent": "okx-feed-delta-execution"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            payload = json.loads(resp.read())
-        return float(payload.get("result", payload).get("time", 0)) / 1000.0
+        url = f"{self.base_url}/v2/products"
+        date_header = self._head(url)
+        if not date_header:
+            raise OrderError("the venue sent no Date header; cannot read its clock")
+        from email.utils import parsedate_to_datetime
+
+        return parsedate_to_datetime(date_header).timestamp()
 
     def clock_skew(self) -> float:
         """Our clock minus the venue's, in seconds."""
@@ -297,7 +308,9 @@ class DeltaOrderClient:
                 f"clock skew is {skew:+.2f}s, beyond the {MAX_CLOCK_SKEW_SECONDS:g}s "
                 f"limit. Delta signatures are valid for only "
                 f"{SIGNATURE_TTL_SECONDS}s, so a skewed clock rejects every order. "
-                f"Sync with `sudo ntpdate -u pool.ntp.org` or `chronyc makestep`."
+                f"Sync with `sudo ntpdate -u pool.ntp.org` or `chronyc makestep`. "
+                f"(Note: the Date header is served through CloudFront and a cache "
+                f"hit can make this reading stale; confirm with NTP.)"
             )
 
     # ------------------------------------------------------------------- order
@@ -352,6 +365,16 @@ class DeltaOrderClient:
         )
 
     # --------------------------------------------------------------- transport
+    def _head(self, url: str) -> str | None:
+        """Fetch a URL's `Date` header. Injectable, so the clock path is testable."""
+        if self._head_sender is not None:
+            return self._head_sender(url)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "okx-feed-delta-execution"}, method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return resp.headers.get("Date")
+
     def _http_send(self, method: str, url: str, headers: dict, body: str):
         req = urllib.request.Request(url, data=body.encode(), headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:

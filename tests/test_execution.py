@@ -322,6 +322,34 @@ class TestClockSkew:
         client.server_time = lambda: 100.0  # type: ignore[method-assign]
         assert client.clock_skew() == pytest.approx(5.0)
 
+    def test_server_time_parses_the_date_header(self):
+        """Delta has no /v2/time; the clock comes from the Date header.
+
+        The parse is the real one: only the header fetch is injected.
+        """
+        client = DeltaOrderClient(
+            head_sender=lambda url: "Thu, 22 Oct 2026 22:22:18 GMT"
+        )
+        # 2026-10-22T22:22:18Z, independently confirmed via datetime
+        assert client.server_time() == pytest.approx(1792707738.0)
+
+    def test_missing_date_header_raises(self):
+        client = DeltaOrderClient(head_sender=lambda url: None)
+        with pytest.raises(OrderError):
+            client.server_time()
+
+    def test_head_targets_the_v2_products_endpoint(self):
+        """The endpoint that actually exists: /v2/time 404s on both hosts."""
+        seen = {}
+
+        def head(url):
+            seen["url"] = url
+            return "Thu, 22 Oct 2026 22:22:18 GMT"
+
+        DeltaOrderClient(head_sender=head).server_time()
+        assert seen["url"].endswith("/v2/products")
+        assert "delta" in seen["url"]
+
 
 # ------------------------------------------------------------------- wiring
 class TestWiring:

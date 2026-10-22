@@ -120,6 +120,12 @@ cached. `DeltaOrderClient.check_clock()` refuses to sign when the local clock is
 more than 2 seconds from the venue's, because a skewed clock rejects every order
 with an error that reads like an auth failure.
 
+> **The venue clock is only advisory.** Delta has no `/v2/time` endpoint (both
+> hosts return 404), so the clock is read from the HTTP `Date` header. The live
+> host is behind CloudFront, and a cache hit serves the `Date` of the *cached*
+> response, so that reading can be stale by minutes. Sync with NTP and treat the
+> venue's `signature_expired` rejection as the authoritative signal.
+
 > **Unverified against the venue.** Delta's own documentation example signature
 > does not reproduce from the algorithm it documents (checked). The algorithm
 > implemented here is the one described in prose and used by the official
