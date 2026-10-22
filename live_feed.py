@@ -32,12 +32,14 @@ from pathlib import Path
 
 from orderflow import DELTA_BTCUSD, OKX_BTC_USDT_SWAP, MarketCalendar, SessionChart
 from orderflow.execution import (
+    BASE_URLS,
     DELTA_PERP_RULES,
-    OKX_SWAP_RULES,
     DeltaCredentials,
     DeltaOrderClient,
     Environment,
+    ProductResolutionError,
     contracts_for_base,
+    resolve_perpetual,
 )
 from orderflow.feed import FileTransport, OkxTradeFeed, ReplayTransport, record_frames
 from orderflow.feed.okx import PUBLIC_WS
@@ -192,12 +194,25 @@ def main(argv=None) -> int:
         return 1
 
     if args.execute:
-        order = contracts_for_base(DELTA_BTCUSD, args.order_size, DELTA_PERP_RULES)
-        print(f"execution leg: {order}")
-        if chart.cumulative_delta > 0:
-            result = client.buy(product_id=DELTA_BTCUSD.venue_id, size=int(order.contracts))
-        else:
-            result = client.sell(product_id=DELTA_BTCUSD.venue_id, size=int(order.contracts))
+        # Resolve by symbol, never by a hardcoded id: production carries the
+        # perpetual on id 27 while testnet carries an expired future there.
+        try:
+            product, exec_instrument = resolve_perpetual(
+                BASE_URLS[environment], DELTA_BTCUSD.symbol, DELTA_BTCUSD
+            )
+        except ProductResolutionError as exc:
+            print(f"cannot resolve the execution leg: {exc}", file=sys.stderr)
+            return 1
+
+        print(f"execution leg: id {product.venue_id} {product.symbol} "
+              f"tick {product.tick_size} 1 contract = {product.contract_value} base")
+        if product.grid_problems(DELTA_BTCUSD):
+            print(f"  note: {'; '.join(product.grid_problems(DELTA_BTCUSD))}")
+
+        order = contracts_for_base(exec_instrument, args.order_size, DELTA_PERP_RULES)
+        print(f"order size   : {order}")
+        side_fn = client.buy if chart.cumulative_delta > 0 else client.sell
+        result = side_fn(product_id=product.venue_id, size=int(order.contracts))
         print(f"order: sent={result.sent} ok={result.ok} "
               f"status={result.status_code} error={result.error}")
 

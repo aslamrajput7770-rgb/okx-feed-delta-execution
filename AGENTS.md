@@ -19,6 +19,7 @@ python3 -m pytest tests -q                  # 143 tests, no network, ~0.2s
 python3 live_feed.py --minutes 1 --record c.txt   # live OKX, no orders
 python3 diagnose_okx.py c.txt               # side-mapping verdict
 python3 live_feed.py --replay c.txt         # offline replay
+python3 preflight_delta.py                  # testnet key check, read-only
 ```
 
 `diagnose_okx.py` exits non-zero when the verdict is not `OK`. It is a check,
@@ -46,6 +47,17 @@ contracts are 0.01 BTC, Delta contracts are 0.001 BTC. Use
 
 **Rounding is always down.** An over-sized leg is worse than an under-sized one.
 `_floor_to_step` uses `Decimal`: `0.1 // 0.01` is 9.0 on floats.
+
+**The execution leg is resolved by symbol, never by a hardcoded product id.**
+Product ids are not portable between environments: production carries the BTCUSD
+perpetual on id 27, testnet carries an expired March future on id 27 (contract
+value 1 BTC, i.e. 1000x) and the perpetual on id 84. Use `resolve_perpetual()`
+and let the venue's own spec build the `Instrument`.
+
+**A `contract_value` mismatch is fatal; a `tick_size` mismatch is not.**
+`contract_value` multiplies the order size, so a wrong one is a silent
+thousand-fold error. `tick_size` only moves the price grid. See
+`sizing_problems()` vs `grid_problems()`.
 
 **Credentials come from the environment.** There is no constructor argument for
 the API secret, and there must not be. `DELTA_API_KEY` / `DELTA_API_SECRET`

@@ -11,12 +11,13 @@ is unchanged; the market-data feed and the session calendar are replaced.
 **This is not arbitrage.** OKX is the *signal* venue, Delta India is the
 *execution* venue. They are two different contracts:
 
-| | OKX `BTC-USDT-SWAP` | Delta India `BTCUSD` (id 27) |
+| | OKX `BTC-USDT-SWAP` | Delta India `BTCUSD` |
 |---|---|---|
 | Type | perpetual | perpetual |
-| Tick | 0.1 | 0.5 |
+| Tick | 0.1 | 0.5 (production) |
 | 1 contract | **0.01 BTC** | **0.001 BTC** |
 | Settles in | **USDT** | **USD** |
+| Product id | `BTC-USDT-SWAP` | 27 on production, **84 on testnet** |
 
 They are quoted in different currencies, on different order books, and the
 price difference (the *basis*) moves. Acting on an OKX signal at Delta is a
@@ -133,6 +134,30 @@ with an error that reads like an auth failure.
 > **not** been confirmed against the live venue. Run
 > `DeltaOrderClient.verify_signature_against_venue()` on **testnet** before
 > trusting it with a real order.
+
+## Product ids are not portable
+
+Found by `preflight_delta.py` while building this, and worth stating plainly:
+
+```
+PRODUCTION  id 27 -> BTCUSD        perpetual, tick 0.5, 1 contract = 0.001 BTC
+TESTNET     id 27 -> BTCUSD_27Mar  EXPIRED future, tick 0.5, 1 contract = 1 BTC
+TESTNET     id 84 -> BTCUSD        perpetual, tick 0.1, 1 contract = 0.001 BTC
+```
+
+The testnet contract on id 27 is an expired March future with a contract value a
+**thousand times** the perpetual. Code that hardcodes `product_id=27` and is
+pointed at testnet signs a perfectly valid order for 1000x the intended size,
+and nothing in the response says so.
+
+So the execution leg is resolved **by symbol** at runtime, per host, and the
+returned spec is checked before any order is built. `contract_value` and `state`
+mismatches stop the run; a `tick_size` difference is reported but allowed,
+because it moves the price grid without changing the position size.
+
+```bash
+python3 preflight_delta.py          # testnet keys; read-only, places no order
+```
 
 ## What is deliberately absent
 

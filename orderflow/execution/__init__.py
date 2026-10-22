@@ -25,6 +25,12 @@ from .delta_client import (
     generate_signature,
     signature_payload,
 )
+from .products import (
+    ProductResolutionError,
+    ResolvedProduct,
+    fetch_products,
+    resolve_perpetual,
+)
 from .sizing import (
     DELTA_PERP_RULES,
     OKX_SWAP_RULES,
@@ -44,6 +50,11 @@ __all__ = [
     "SizingError",
     "contracts_for_base",
     "rebalance",
+    # products
+    "ResolvedProduct",
+    "ProductResolutionError",
+    "fetch_products",
+    "resolve_perpetual",
     # delta client
     "Environment",
     "BASE_URLS",
