@@ -8,7 +8,8 @@ other is out by a factor of ten without any error being raised.
 Verified against the live exchange specs (2026-10-22):
 
     OKX   BTC-USDT-SWAP : tick 0.1   1 contract = 0.01 BTC   settles USDT
-    Delta BTCUSD (id 27): tick 0.5   1 contract = 0.001 BTC  settles USD
+    Delta BTCUSD        : tick 0.5   1 contract = 0.001 BTC  settles USD
+                          (id 27 in production, id 84 on testnet)
 
 So `size` is always in *contracts* and is only meaningful together with the
 instrument's `contract_value`. Convert through `contracts_for_base()` rather
@@ -51,7 +52,13 @@ class Instrument:
     #: breaks cross-venue sizing when it is assumed to be 1.
     contract_value: float
     settle_ccy: str = "USDT"
-    #: Venue-side numeric product id, where the venue uses one (Delta: 27).
+    #: Venue-side numeric product id, where the venue uses one.
+    #:
+    #: **Do not treat this as portable.** Product ids are assigned per
+    #: environment: Delta carries the BTCUSD perpetual on id 27 in production
+    #: but on id 84 on testnet, where id 27 is an expired March future whose
+    #: contract value is 1000x larger. Anything that places an order must call
+    #: `resolve_perpetual()` and use the id it returns, not this field.
     venue_id: int | None = None
     session: SessionKind = SessionKind.CRYPTO_24_7
     underlying: str | None = None
@@ -103,6 +110,7 @@ DELTA_BTCUSD = Instrument(
     tick_size=0.5,
     contract_value=0.001,  # 1 contract = 0.001 BTC
     settle_ccy="USD",
+    #: Production id only. Testnet uses 84; resolve at runtime before ordering.
     venue_id=27,
 )
 
