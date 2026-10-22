@@ -240,6 +240,9 @@ class DeltaOrderClient:
         #: path without touching the network.
         self._sender = sender or self._http_send
         self._head_sender = head_sender
+        #: Makes each clock probe a distinct URL, so the CDN cannot replay a
+        #: cached `Date`.
+        self._probe_n = 0
         self.base_url = BASE_URLS[environment]
 
         # Credentials are only demanded when they will actually be used. A dry
@@ -280,16 +283,14 @@ class DeltaOrderClient:
         Delta publishes no `/v2/time` endpoint (checked: it 404s on both hosts),
         so the response header is the only clock the venue offers.
 
-        Caveat, and it is a real one: the live host sits behind CloudFront, and
-        a cache hit carries the `Date` of the *cached* response, which can be
-        minutes old. A stale header makes the computed skew meaningless, so this
-        value is advisory. The authoritative signal is the venue's own
-        `signature_expired` rejection, which `place_order` surfaces explicitly.
-        For a trustworthy clock, sync with NTP (`chronyc makestep`) and treat
-        this as a sanity check only.
+        The venue caches this endpoint, and a cache hit replays the `Date` of the
+        cached response, which made the reported skew ~40s off on an accurate
+        clock. `_venue_date_header()` defeats the cache, so the value is usable.
+        It is still worth confirming with NTP, and the venue's own
+        `signature_expired` rejection remains the authoritative signal.
         """
         url = f"{self.base_url}/v2/products"
-        date_header = self._head(url)
+        date_header = self._venue_date_header(url)
         if not date_header:
             raise OrderError("the venue sent no Date header; cannot read its clock")
         from email.utils import parsedate_to_datetime
@@ -308,9 +309,7 @@ class DeltaOrderClient:
                 f"clock skew is {skew:+.2f}s, beyond the {MAX_CLOCK_SKEW_SECONDS:g}s "
                 f"limit. Delta signatures are valid for only "
                 f"{SIGNATURE_TTL_SECONDS}s, so a skewed clock rejects every order. "
-                f"Sync with `sudo ntpdate -u pool.ntp.org` or `chronyc makestep`. "
-                f"(Note: the Date header is served through CloudFront and a cache "
-                f"hit can make this reading stale; confirm with NTP.)"
+                f"Sync with `sudo ntpdate -u pool.ntp.org` or `chronyc makestep`."
             )
 
     # ------------------------------------------------------------------- order
@@ -365,13 +364,42 @@ class DeltaOrderClient:
         )
 
     # --------------------------------------------------------------- transport
-    def _head(self, url: str) -> str | None:
-        """Fetch a URL's `Date` header. Injectable, so the clock path is testable."""
+    def _venue_date_header(self, url: str) -> str | None:
+        """Fetch a *fresh* `Date` header from the venue.
+
+        Three obstacles had to be worked around, each measured against the live
+        hosts rather than assumed:
+
+        1. `HEAD` is unreliable here. It returns 404 on the live host, and
+           intermittently on testnet, while `GET` returns 200 on both. So this
+           sends a `Range` GET for one byte, which returns 206 with the headers
+           intact and without pulling the 2 MB product list.
+        2. The CDN caches `/v2/products` for 60 seconds
+           (`cache-control: public,max-age=60`) and a cache hit replays the
+           `Date` of the *cached* response. Measured: a response with `Age: 39`
+           reported a 40-second skew. A unique query parameter forces a fresh
+           origin response; measured skew then went to 0s.
+        3. `Cache-Control: no-cache` does **not** defeat it. The CDN ignored the
+           request header and still served a 42-second-old copy.
+
+        Without the unique parameter this function would routinely report a
+        ~40-second skew on a perfectly accurate clock, and `check_clock()` would
+        tell the user to fix a clock that was already right.
+        """
+        headers = {
+            "User-Agent": "okx-feed-delta-execution",
+            "Range": "bytes=0-0",
+        }
+        # The cache-buster is applied before the transport, so an injected
+        # sender sees the same URL the real one would send.
+        self._probe_n += 1
+        sep = "&" if "?" in url else "?"
+        fresh = f"{url}{sep}_probe={int(self._clock() * 1000)}-{self._probe_n}"
+
         if self._head_sender is not None:
-            return self._head_sender(url)
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "okx-feed-delta-execution"}, method="HEAD"
-        )
+            return self._head_sender(fresh, headers)
+
+        req = urllib.request.Request(fresh, headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return resp.headers.get("Date")
 

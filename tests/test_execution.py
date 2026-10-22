@@ -328,27 +328,76 @@ class TestClockSkew:
         The parse is the real one: only the header fetch is injected.
         """
         client = DeltaOrderClient(
-            head_sender=lambda url: "Thu, 22 Oct 2026 22:22:18 GMT"
+            head_sender=lambda url, headers: "Thu, 22 Oct 2026 22:22:18 GMT"
         )
         # 2026-10-22T22:22:18Z, independently confirmed via datetime
         assert client.server_time() == pytest.approx(1792707738.0)
 
     def test_missing_date_header_raises(self):
-        client = DeltaOrderClient(head_sender=lambda url: None)
+        client = DeltaOrderClient(head_sender=lambda url, headers: None)
         with pytest.raises(OrderError):
             client.server_time()
 
-    def test_head_targets_the_v2_products_endpoint(self):
+    def test_probe_targets_the_v2_products_endpoint(self):
         """The endpoint that actually exists: /v2/time 404s on both hosts."""
         seen = {}
 
-        def head(url):
+        def head(url, headers):
             seen["url"] = url
+            seen["headers"] = headers
             return "Thu, 22 Oct 2026 22:22:18 GMT"
 
         DeltaOrderClient(head_sender=head).server_time()
-        assert seen["url"].endswith("/v2/products")
+        assert "/v2/products" in seen["url"]
         assert "delta" in seen["url"]
+
+    def test_probe_sends_a_range_get_not_a_head(self):
+        """HEAD 404s on the live host and intermittently on testnet.
+
+        A one-byte Range GET returns 206 with the headers intact, so the clock
+        must not depend on HEAD.
+        """
+        seen = {}
+
+        def head(url, headers):
+            seen.update(headers)
+            return "Thu, 22 Oct 2026 22:22:18 GMT"
+
+        DeltaOrderClient(head_sender=head).server_time()
+        assert seen.get("Range") == "bytes=0-0"
+
+    def test_probe_url_is_unique_so_the_cdn_cannot_replay_a_cached_date(self):
+        """The measured failure: cache-control max-age=60 replays a stale Date.
+
+        A response with `Age: 39` reported a ~40s skew on an accurate clock.
+        `Cache-Control: no-cache` did not help, so each probe must be a distinct
+        URL. Two probes in the same millisecond must still differ.
+        """
+        urls = []
+
+        def head(url, headers):
+            urls.append(url)
+            return "Thu, 22 Oct 2026 22:22:18 GMT"
+
+        client = DeltaOrderClient(clock=lambda: 100.0, head_sender=head)
+        client.server_time()
+        client.server_time()
+        assert len(urls) == 2
+        assert urls[0] != urls[1], "identical probe URLs can be served from cache"
+        assert all("_probe=" in u for u in urls)
+
+    def test_probe_url_keeps_the_existing_query_string(self):
+        """A cache-buster must append, not replace, an existing query string."""
+        seen = {}
+
+        def head(url, headers):
+            seen["url"] = url
+            return "Thu, 22 Oct 2026 22:22:18 GMT"
+
+        client = DeltaOrderClient(head_sender=head)
+        client._venue_date_header("https://x/v2/products?a=1")  # noqa: SLF001
+        assert "a=1" in seen["url"]
+        assert "&_probe=" in seen["url"]
 
 
 # ------------------------------------------------------------------- wiring
