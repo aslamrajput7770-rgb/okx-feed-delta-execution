@@ -207,6 +207,7 @@ class Supervisor:
         execute: bool = False,
         seed: int = 1,
         entry_gate=None,
+        max_consecutive_failures: int = 3,
     ) -> None:
         self.client = client
         self.limits = limits
@@ -219,6 +220,14 @@ class Supervisor:
         #: the basis check, which needs a price and therefore cannot run before
         #: the feed has produced one.
         self.entry_gate = entry_gate
+        #: A circuit breaker. A rejected credential or a blocked IP fails every
+        #: order identically, and retrying it on every trade turns one bad
+        #: config into a request storm against the venue. Consecutive failures
+        #: are counted and the loop stops; a success resets the count, so a
+        #: single transient blip does not end the run.
+        self.max_consecutive_failures = max_consecutive_failures
+        self.consecutive_failures = 0
+        self.stopped = False
 
         day_key = ""
         self.manager = RiskManager(
@@ -277,11 +286,12 @@ class Supervisor:
             fn = self.client.buy if side == "buy" else self.client.sell
             result = fn(product_id=self.product_id, size=int(sized.contracts))
             if not result.ok:
-                self.manager._note(
+                self._note_failure(
                     f"ENTRY FAILED: {side} {int(sized.contracts)} contract(s) "
                     f"status={result.status_code} error={result.error}"
                 )
                 return
+            self.consecutive_failures = 0
             self.manager._note(f"ENTRY SENT: {cid}")
 
         self.manager.open(position)
@@ -300,7 +310,7 @@ class Supervisor:
                 client_order_id=self._client_order_id(),
             )
             if not result.ok:
-                self.manager._note(
+                self._note_failure(
                     f"EXIT FAILED ({reason}): status={result.status_code} "
                     f"error={result.error}. Position is still open."
                 )
@@ -308,9 +318,28 @@ class Supervisor:
                 # still live at the venue, and forgetting it is how a stop loss
                 # becomes a bigger loss.
                 return
+            self.consecutive_failures = 0
 
         self.manager.close(price, reason)
         self.exits += 1
+
+    # ------------------------------------------------------------------- util
+    def _note_failure(self, message: str) -> None:
+        """Record a venue failure and stop the loop if they keep coming.
+
+        An invalid key or an unwhitelisted IP fails every request the same way.
+        Without this, the loop retries on every trade and turns a config mistake
+        into hundreds of signed requests against the venue.
+        """
+        self.consecutive_failures += 1
+        self.manager._note(message)
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.stopped = True
+            self.manager._note(
+                f"STOPPED after {self.consecutive_failures} consecutive venue "
+                f"failures. This is not a transient error; check the credentials, "
+                f"the whitelisted IP, and the account. No further orders."
+            )
 
     # --------------------------------------------------------------- callback
     def on_trade(self, trade, event=None, cumulative_delta: float | None = None) -> None:
@@ -336,6 +365,8 @@ class Supervisor:
                 self._exit(price, signal.reason)
             return
 
+        if self.stopped:
+            return
         if self.manager.halted:
             return
 
@@ -440,6 +471,9 @@ def main(argv=None) -> int:
                     help="where the daily loss counter is persisted across restarts")
     ap.add_argument("--no-risk-state", dest="risk_state", action="store_const", const=None,
                     help="do not persist the daily counter (testing only)")
+    ap.add_argument("--max-order-failures", type=int, default=3,
+                    help="stop after this many consecutive venue failures; a bad key "
+                         "or a blocked IP fails every order the same way")
     args = ap.parse_args(argv)
 
     if args.execute and args.order_size <= 0:
@@ -607,6 +641,7 @@ def main(argv=None) -> int:
             execute=True,
             seed=int(time.time()),
             entry_gate=gate,
+            max_consecutive_failures=args.max_order_failures,
         )
         if supervisor.manager.state.day_key:
             print(f"risk day     : {supervisor.manager.state.day_key} "
@@ -642,9 +677,18 @@ def main(argv=None) -> int:
         print(f"realized pnl : {supervisor.realized:+.4f} quote")
         if supervisor.manager.halted:
             print("HALTED       : daily loss limit reached; trading stopped for this day.")
+        if supervisor.stopped:
+            print(f"STOPPED      : {supervisor.consecutive_failures} consecutive venue "
+                  f"failures. The venue is rejecting orders; check the credentials, "
+                  f"the whitelisted IP, and the account.", file=sys.stderr)
+        if supervisor.manager.position is not None:
+            print(f"WARNING      : a {supervisor.manager.position.side} position of "
+                  f"{supervisor.manager.position.size_base:g} base is STILL OPEN at "
+                  f"the venue. The exit could not be sent. Close it by hand.",
+                  file=sys.stderr)
         for line in supervisor.manager.log:
             print(f"  {line}")
-        return 0
+        return 1 if (supervisor.stopped or supervisor.manager.position is not None) else 0
 
     return 0
 

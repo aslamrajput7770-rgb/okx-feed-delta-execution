@@ -20,3 +20,6 @@ reports/
 
 # Local credential file, see config/delta.env
 config/delta.local.env
+
+# Daily loss counter written by the risk layer at runtime.
+state/

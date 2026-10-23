@@ -413,3 +413,50 @@ class TestSupervisorLoop:
         s.on_trade(ticks([80000.0], start_ts=1792574800.0)[0], cumulative_delta=1.0)
         assert s.exits == 1
         assert "max_hold" in " ".join(s.manager.log)
+
+
+class TestCircuitBreaker:
+    """A bad key or a blocked IP fails every order the same way.
+
+    Without a breaker the loop retries on every trade, which turns one config
+    mistake into a request storm against the venue.
+    """
+
+    def test_repeated_failures_stop_the_loop(self):
+        client = RecordingClient(ok=False)
+        s = supervised(client)
+        s.max_consecutive_failures = 3
+        for i in range(50):
+            s.on_trade(ticks([80000.0], start_ts=1792574700.0 + i)[0],
+                       cumulative_delta=1.0)
+        assert s.stopped
+        assert client.sent and len(client.sent) == 3
+        assert "STOPPED after 3 consecutive venue failures" in " ".join(s.manager.log)
+
+    def test_a_success_resets_the_counter(self):
+        """One transient blip must not end the run."""
+        client = RecordingClient(ok=False)
+        s = supervised(client)
+        s.max_consecutive_failures = 2
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)      # 1 failure
+        client.ok = True
+        s.on_trade(ticks([80000.0], start_ts=1792574800.0)[0], cumulative_delta=1.0)
+        assert s.consecutive_failures == 0
+        assert not s.stopped
+        assert s.entries == 1
+
+    def test_the_breaker_does_not_block_exits(self):
+        """An open position must keep getting exit attempts.
+
+        Abandoning a live position is worse than a repeated failed request, so
+        the breaker stops new entries only.
+        """
+        client = RecordingClient()
+        s = supervised(client)
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert s.manager.position is not None
+        client.ok = False
+        s.stopped = True
+        s.on_trade(ticks([82000.0], start_ts=1792574800.0)[0], cumulative_delta=1.0)
+        assert len(client.sent) == 2
+        assert "EXIT FAILED" in " ".join(s.manager.log)

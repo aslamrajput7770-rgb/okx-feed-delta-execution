@@ -11,7 +11,7 @@ You are working on an order-flow engine. It reads perpetual trade flow from
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 181 passed
+   `python3 -m pytest tests -q` -> 223 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -78,7 +78,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 181 tests, offline, ~0.2s
+python3 -m pytest tests -q                      # 223 tests, offline, ~0.3s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 ./deploy/run_paper.sh 5                         # 5 min, live host, NO orders
@@ -234,12 +234,31 @@ quiet market until `--minutes` expires. `FeedStats.reconnects` exists and is
 never incremented. (The bound is what ends the run now; before, an unbounded run
 had no exit at all.)
 
-**One signal, one order.** The engine computes cumulative delta over the session
-and sends a single order at the end of the run, sized by `--order-size`. There is
-no entry/exit loop and no risk management. Treat it as a plumbing demonstration
-until that changes. The `--basis-warn` guard, the mainnet confirmation flag and
-the zero-delta check bound what this one order can do; they are not risk
-management.
+**One position at a time.** The engine computes cumulative delta over the session
+and the `Supervisor` loop enters on the sign of that delta, watches the position
+on every trade, and exits on stop loss, take profit, hold limit, or the daily
+loss halt. The limits live in `RiskLimits` and are all CLI flags:
+
+| Rule | Flag | Default |
+|---|---|---|
+| Stop loss | `--stop-loss-pct` | 1% |
+| Take profit | `--take-profit-pct` | 2% |
+| Position cap | `--max-position` | 0.01 BTC |
+| Daily loss limit | `--max-daily-loss` | 50 quote |
+| Max hold | `--max-hold-seconds` | 3600 |
+
+`0` disables a rule explicitly. Exits are sent `reduce_only`, and a failed exit
+leaves the position recorded as open, because it is still live at the venue.
+
+The daily counter persists to `state/daily_pnl.json` (override with
+`--risk-state`, disable with `--no-risk-state`). A limit that resets on restart
+is not a limit: the losing loop is the thing that restarts the process. A file
+from a previous day is discarded rather than carried forward.
+
+The remaining gaps are strategy-level, not safety-level: the entry rule is still
+the raw sign of cumulative delta, and re-entry after an exit is immediate
+whenever the signal still points the same way. Treat it as a plumbing
+demonstration with working guards, not a tuned strategy.
 
 ## Things not to do
 

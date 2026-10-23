@@ -10,7 +10,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (181 tests), and then runs the read-only
+dependencies, runs the offline suite (223 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
@@ -63,6 +63,41 @@ Two consequences that matter more than any line of code:
 2. **Tax and liquidity.** Delta India carries 30% tax and 1% TDS on crypto, and
    thinner books than OKX. A signal that is profitable on paper can be
    unprofitable after the spread, the tax, and the slippage.
+
+## Risk limits
+
+The loop holds one position at a time and closes it on a rule, never on hope.
+Every limit is a CLI flag; `0` disables that rule explicitly.
+
+| Rule | Flag | Default |
+|---|---|---|
+| Stop loss | `--stop-loss-pct` | 1% |
+| Take profit | `--take-profit-pct` | 2% |
+| Position cap | `--max-position` | 0.01 BTC |
+| Daily loss limit | `--max-daily-loss` | 50 quote |
+| Max hold | `--max-hold-seconds` | 3600 |
+| Order-failure breaker | `--max-order-failures` | 3 |
+
+Exits are sent `reduce_only`, so an exit can never open a new position. The
+daily counter is written to `state/daily_pnl.json` and reloaded on the next run:
+a limit that resets when the process restarts is not a limit, because the
+losing loop is the thing that restarts the process. A file from a previous day
+is discarded rather than carried forward.
+
+The breaker exists because a bad key or an unwhitelisted IP fails every order
+the same way. Found by running it: with a testnet-invalid key the loop fired 18
+signed requests in 30 seconds, one per trade, none of which could ever succeed.
+It now stops after 3 consecutive failures. A success resets the count, so one
+transient blip does not end the run, and the breaker blocks new entries only:
+an open position keeps getting exit attempts, because abandoning a live
+position is worse than a repeated failed request.
+
+```bash
+# 0.5% stop, 1% target, 0.002 BTC cap, stop for the day after 25 quote of loss
+python3 live_feed.py --minutes 60 --execute --order-size 0.002 \
+    --stop-loss-pct 0.5 --take-profit-pct 1.0 --max-position 0.002 \
+    --max-daily-loss 25
+```
 
 ## Layout
 
