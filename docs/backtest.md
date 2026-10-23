@@ -20,21 +20,29 @@ Tapes used, all fetched 2026-10-23:
 | `tape_6h` | last 6 hours | 341,933 | 6.0 |
 | `tape_d1` | 22 Oct 17:43-21:43 UTC | 229,321 | 4.0 |
 | `tape_d2` | 21 Oct 17:43-21:43 UTC | 321,974 | 4.0 |
+| `tape_d3` | 20 Oct 17:43-21:43 UTC | 228,424 | 4.0 |
+| `tape_d4` | 19 Oct 17:43-21:43 UTC | 210,037 | 4.0 |
+
+23 hours of prints across three calendar days.
 
 ## Shipped rules, as they stand
 
 Stop 1%, target 2%, hold 3600 s, cap 0.01 BTC, daily loss 50. Order size
 0.001 BTC (one Delta contract). Costs 5 bps fee and 2 bps slippage per side.
 
-| Tape | Trades | Win | Gross | Costs | Net | Max DD | Exits |
+| Tape | Trades | Win | Gross | Costs | Net | Max DD | Market |
 |---|---|---|---|---|---|---|---|
-| 1h | 1 | 0/1 | -0.08 | -0.11 | **-0.20** | -0.20 | end_of_run 1 |
-| 6h | 6 | 0/6 | -0.55 | -0.68 | **-1.24** | -1.24 | max_hold 5, end 1 |
-| d1 | 4 | 1/3 | +0.05 | -0.46 | **-0.41** | -0.46 | max_hold 3, end 1 |
-| d2 | 4 | 0/4 | -0.62 | -0.47 | **-1.09** | -1.09 | max_hold 3, end 1 |
+| 1h | 1 | 0/1 | -0.10 | -0.11 | **-0.21** | -0.21 | -0.08% |
+| 6h | 6 | 0/6 | -0.55 | -0.68 | **-1.24** | -1.24 | -0.17% |
+| d1 | 4 | 1/3 | +0.05 | -0.46 | **-0.41** | -0.46 | +0.22% |
+| d2 | 4 | 0/4 | -0.62 | -0.47 | **-1.09** | -1.09 | +0.20% |
+| d3 | 4 | 0/4 | -0.45 | -0.46 | **-0.91** | -0.91 | +0.05% |
+| d4 | 4 | 0/4 | -0.04 | -0.46 | **-0.50** | -0.50 | +0.11% |
+| **all** | **23** | **1/22** | **-1.71** | **-2.65** | **-4.36** | | |
 
-Every window is negative. Four tapes across two days, and the sign does not
-change.
+Every window is negative: 0 of 6 tapes, 23 trades, one winner, a 4.3% win rate.
+Five of the six windows closed higher than they opened, and the run lost money
+in all five.
 
 ## What the numbers say
 
@@ -43,10 +51,11 @@ exits are the one-hour hold limit. Price did not move 1% in either direction, so
 the position is carried to the clock every time. The risk ladder is not the
 active mechanism; the hold timer is.
 
-**It is not just costs.** With fee and slippage set to zero the 6h tape still
-returns **-0.36** gross. The signal loses before any cost is charged. That
-matters, because "profitable before fees" is a story you can sometimes fix;
-this is not that.
+**It is not just costs.** Across all 23 hours the run is **-1.71 gross** before
+a single basis point of fee is charged, and with fee and slippage set to zero
+the 6h tape still returns **-0.36**. The signal loses before any cost is
+charged. That matters, because "profitable before fees" is a story you can
+sometimes fix; this is not that.
 
 **A tighter stop makes it worse.** Sweeping the 6h tape, stop 0.25%/target
 0.50% gives **-2.11** over 9 trades, while 0.5% and wider all sit at **-1.24**
@@ -73,8 +82,9 @@ who was aggressive, not of where price is going next.
   and the order goes to Delta, where the price differs. The `--basis-bps` flag
   charges it on entry; every run above is at zero, so the real result is *worse*
   than shown, not better.
-- **Short windows.** 15 hours of tape is not a regime. It is enough to see that
-  the edge is absent in these windows, not enough to bound how bad it can be.
+- **Short windows.** 23 hours across three days is not a regime. It is enough to
+  see that the edge is absent in these windows, not enough to bound how bad it
+  can be. Two of the three days are one-sided in the same direction.
 - **One order size.** 0.001 BTC. Results scale linearly with size; nothing here
   depends on it.
 

@@ -36,10 +36,6 @@ from pathlib import Path
 BASE = "https://www.okx.com/api/v5/market/history-trades"
 #: The endpoint rejects a request with no User-Agent.
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; okx-backtest-fetch)"}
-#: Below this the venue returns an empty page; it bounds the tradeId search.
-OLDEST_TRADE_ID = 2_500_000_000
-
-
 def _get(inst_id: str, after: str | None, limit: int = 100, tries: int = 5) -> list[dict]:
     """One page, newest first. Retries transient failures."""
     url = f"{BASE}?instId={inst_id}&limit={limit}"
@@ -60,45 +56,60 @@ def _get(inst_id: str, after: str | None, limit: int = 100, tries: int = 5) -> l
     raise RuntimeError(f"giving up after {tries} tries: {last}")
 
 
-def _ts_of(inst_id: str, trade_id: int) -> int | None:
-    """Timestamp (ms) of the newest print at or before `trade_id`."""
-    rows = _get(inst_id, str(trade_id))
-    return int(rows[0]["ts"]) if rows else None
-
-
 def find_trade_id_for(inst_id: str, target_ms: int) -> int | None:
-    """Binary search the tradeId space for the first id at/after `target_ms`.
+    """The tradeId to start paging from, so paging reaches `target_ms`.
 
-    tradeId increases with time, so this is a plain bisection. The upper bound is
-    the newest id; the lower is the floor the venue stops answering below.
+    Paging only walks *backwards*, so the start id must be one whose newest
+    print is at or after the target: from there, paging descends into the window.
+    Start too high and the walk is slow; start too low and the window is skipped
+    entirely and the fetch returns nothing.
+
+    The id space is sparse and the venue has no documented lower bound, so the
+    bounds are found rather than assumed. Double downwards from the newest id:
+    a probe whose newest print is still after the target is a valid start, a
+    probe that is empty or older than the target is not. Stop at the first
+    invalid probe and bisect between the two.
+
+    The first version of this inverted the two cases and returned a probe that
+    was *older* than the target, so the walk started below the window and found
+    zero prints - while the search itself looked like it was working.
     """
     newest = _get(inst_id, None)
     if not newest:
         return None
     hi = int(newest[0]["tradeId"])
     if int(newest[0]["ts"]) <= target_ms:
-        return hi  # the target is in the future; start at the newest print
+        return hi  # the target is at or after the newest print
 
-    lo = OLDEST_TRADE_ID
-    if _ts_of(inst_id, lo) is None:
-        # Walk up until the venue answers, doubling, then bisect inside that.
-        step = 1_000_000
-        while _ts_of(inst_id, lo) is None and lo < hi:
-            lo += step
-            step *= 2
-        if lo >= hi:
-            return None
+    def reaches_target(trade_id: int) -> bool:
+        """Whether a page starting here is at/after the target."""
+        rows = _get(inst_id, str(trade_id))
+        return bool(rows) and int(rows[0]["ts"]) > target_ms
 
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        ts = _ts_of(inst_id, mid)
-        if ts is None:
-            lo = mid
-        elif ts > target_ms:
-            hi = mid
+    # `good` reaches the target (paging from it covers the window); `bad` does
+    # not. Start with the newest id as good, and push the bad bound down.
+    good = hi
+    bad = 0
+    span = 1_000_000
+    while span < hi:
+        probe = good - span
+        if probe <= 0:
+            break
+        if reaches_target(probe):
+            good = probe
+            span *= 2
         else:
-            lo = mid
-    return lo
+            bad = probe
+            break
+
+    # Smallest good id: the lowest start that still reaches the target.
+    while good - bad > 1:
+        mid = (bad + good) // 2
+        if reaches_target(mid):
+            good = mid
+        else:
+            bad = mid
+    return good
 
 
 def fetch_range(inst_id: str, start_ms: int, end_ms: int, quiet: bool = False) -> list[dict]:
@@ -136,9 +147,11 @@ def fetch_range(inst_id: str, start_ms: int, end_ms: int, quiet: bool = False) -
         if reached_start or oldest_seen <= start_ms:
             break
         if pages % 50 == 0 and not quiet:
-            mins = (end_ms - oldest_seen) / 60_000.0
+            from datetime import datetime, timezone
+
+            reached = datetime.fromtimestamp(oldest_seen / 1000, timezone.utc)
             print(
-                f"  ... {len(by_id)} prints, {mins:.1f} min back, "
+                f"  ... {len(by_id)} prints, back to {reached:%Y-%m-%d %H:%M}Z, "
                 f"{time.time() - t0:.0f}s elapsed",
                 file=sys.stderr,
             )
@@ -153,11 +166,10 @@ def fetch_range(inst_id: str, start_ms: int, end_ms: int, quiet: bool = False) -
 def to_tape_lines(rows: list[dict], inst_id: str, chunk: int = 20) -> list[str]:
     """Convert REST rows into OKX trades-channel frames.
 
-    The replay path expects the websocket frame shape, not the REST shape: same
-    fields, but wrapped in `{"arg": {...}, "data": [...]}` and with the size key
-    renamed `sz` -> `sz` (identical) while the REST `source` field is dropped.
-    Batching a few prints per frame keeps the frame count near what a live socket
-    would deliver.
+    The replay path expects the websocket frame shape, not the REST shape: the
+    same fields, but wrapped in `{"arg": {...}, "data": [...]}`, and with the
+    REST-only `source` field dropped. Batching a few prints per frame keeps the
+    frame count near what a live socket would deliver.
     """
     lines: list[str] = []
     for i in range(0, len(rows), chunk):
