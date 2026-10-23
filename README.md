@@ -174,3 +174,43 @@ python3 preflight_delta.py          # testnet keys; read-only, places no order
 ## Licence
 
 MIT, inherited from the original repository.
+
+## Running it
+
+Paper mode takes the OKX feed and reports the order it would send, without
+sending one:
+
+    ./deploy/run_paper.sh 5          # five minutes, live host, no orders
+
+Output:
+
+    venue      : OKX wss://ws.okx.com:8443/ws/v5/public
+    execution  : Delta live (DRY RUN, no orders)
+    frames=4271 trades=4238 duplicates=0 control=33 errors=0
+    bars=11 volume=17288.7 cum_delta=5119.94
+    execution leg: id 27 BTCUSD tick 0.5 1 contract = 0.001 base
+    signal       : cumulative delta 5119.94 -> buy
+    order size   : DELTA:BTCUSD 1 contracts = 0.001 base
+    dry run      : would send buy 1 contract(s) of product_id=27. No request sent.
+
+The product id is resolved from the venue on every run, never assumed. On
+production id 27 is the BTCUSD perpetual; on testnet id 27 is an expired future
+with a 1000x larger contract value, which is why the resolver exists.
+
+Placing real orders is a different script, and it refuses to start without an
+explicit size:
+
+    DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5
+
+The separation is deliberate: enabling trading should take a distinct command
+rather than a flag appended to the one already in your shell history.
+
+### Verifying that nothing was sent
+
+The account's own history is the check that matters:
+
+    filled orders on this account: 0
+    open positions: 0
+
+`preflight_delta.py --live` performs the read-only checks, and the runner never
+passes `--execute`.
