@@ -28,6 +28,16 @@ UNIT="/etc/systemd/system/okx-feed-delta.service"
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
+# Run a command as the service user. setpriv is in util-linux, which both
+# Amazon Linux 2023 and Debian/Ubuntu ship; runuser is the fallback.
+as_service_user() {
+    if command -v setpriv >/dev/null 2>&1; then
+        setpriv --reuid "$SERVICE_USER" --regid "$SERVICE_USER" --clear-groups "$@"
+    else
+        runuser -u "$SERVICE_USER" -- "$@"
+    fi
+}
+
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
 
 say "1/8 host identity and clock"
@@ -94,6 +104,16 @@ fi
 install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$APP_DIR/state"
 chown -R root:root "$APP_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/state"
+# Normalise the modes. rsync -a and tar -p both preserve the source modes, so a
+# checkout that was copied from somewhere with a restrictive umask can carry a
+# mode-600 source file into the install tree - and the service user then cannot
+# read it. The ownership is already correct; this makes the modes agree with it.
+# Directories need the execute bit to be traversable at all.
+find "$APP_DIR" -path "$APP_DIR/.venv" -prune -o -path "$APP_DIR/state" -prune -o \
+    -type d -exec chmod 0755 {} +
+find "$APP_DIR" -path "$APP_DIR/.venv" -prune -o -path "$APP_DIR/state" -prune -o \
+    -type f -exec chmod 0644 {} +
+find "$APP_DIR/deploy" -name '*.sh' -type f -exec chmod 0755 {} +
 echo "  installed; state/ owned by ${SERVICE_USER}"
 
 say "5/8 virtualenv and dependencies"
@@ -103,7 +123,31 @@ say "5/8 virtualenv and dependencies"
 echo "  $("$APP_DIR/.venv/bin/python" --version)"
 
 say "6/8 test suite (offline, no credentials)"
-( cd "$APP_DIR" && ./.venv/bin/python -m pytest tests -q 2>&1 | tail -2 | sed 's/^/  /' )
+# Run as the service user, not as root. A test that writes a file must create it
+# with the ownership the service will have; run as root it creates root-owned
+# files in the install tree, and the service then fails on its first run with a
+# PermissionError on its own daily counter. Running here also proves the service
+# user can read the checkout and write state/, which is the whole permission
+# story for this unit.
+#
+# The install tree belongs to root, so the bytecode cache, pytest's cache and
+# its tmp_path root all go somewhere the service user can write; the code itself
+# stays read-only to it. --basetemp is not optional: pytest refuses to reuse a
+# /tmp/pytest-of-root left by an earlier run as a different user.
+PYCACHE="$(mktemp -d)"
+chown "$SERVICE_USER:$SERVICE_USER" "$PYCACHE"
+( cd "$APP_DIR" && as_service_user env PYTHONPYCACHEPREFIX="$PYCACHE" \
+    ./.venv/bin/python -m pytest tests -q -p no:cacheprovider \
+        --basetemp="$PYCACHE/pytest" 2>&1 | tail -2 | sed 's/^/  /' )
+rm -rf "$PYCACHE"
+
+# The daily counter is the one file whose loss changes trading behaviour, and it
+# is written by the service user at runtime. Prove the directory is writable
+# before the unit is installed, rather than discovering it from a crash loop.
+if ! as_service_user test -w "$APP_DIR/state"; then
+    die "${SERVICE_USER} cannot write ${APP_DIR}/state; the service would fail on its first run"
+fi
+echo "  state/ is writable by ${SERVICE_USER}"
 
 say "7/8 credentials and mode"
 install -d -m 0700 "$ENV_DIR"

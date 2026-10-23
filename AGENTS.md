@@ -11,7 +11,7 @@ You are working on an order-flow engine. It reads perpetual trade flow from
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 272 passed
+   `python3 -m pytest tests -q` -> 275 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -43,10 +43,14 @@ notifications a live run would, minus the request.
 
 **Not done, and the reason matters.**
 
-1. **Nothing has been deployed.** `deploy/aws_setup.sh` has never run on a host.
-   The systemd unit is verified syntactically (`systemd-analyze verify`) and the
-   service path runs locally under `SERVICE_MODE=paper`, but the first real
-   install is still ahead. Run it in paper mode first and watch a full session.
+1. **The installer has been run, but not on the target host.** `deploy/aws_setup.sh`
+   has now been executed end to end on a clean Debian container: it created the
+   service user, installed the code, ran the suite as that user (275 passed),
+   proved `state/` is writable by it, wrote both env files and installed the
+   unit. That run is what found the two defects described below. What has *not*
+   happened is an install on the actual EC2 instance, and no systemd unit has
+   ever been started by systemd - this container has no init. Expect the unit
+   install and `systemctl start` to be the first genuinely new step there.
 2. **The Delta credentials must be rotated.** They are committed in
    `config/delta.env` at the owner's explicit instruction. Do not undo that, but
    do tell the owner to rotate the key and the secret; a committed credential is
@@ -58,6 +62,25 @@ notifications a live run would, minus the request.
    stop loss fires, so the next tick re-enters; a run can walk into the same loss
    until the daily budget halts it. This is a strategy gap, not a safety one, and
    it is the most likely next piece of real work.
+
+Two deployment defects were found by running the installer rather than reading
+it, and both are fixed. They are recorded because the shape of each is easy to
+reintroduce:
+
+* **The suite wrote into the directory it was run from.** `--risk-state`
+  defaults to the relative `state/daily_pnl.json`, which is correct for the
+  service (systemd sets `WorkingDirectory` to the install root) and wrong for a
+  test. The installer runs the suite as root, so the file it left in the install
+  tree was root-owned, and the service user then hit `PermissionError` on its own
+  daily counter - on the first run, in paper mode. `tests/conftest.py` now chdirs
+  every test into a temporary directory, and `tests/test_deploy_isolation.py`
+  pins it.
+* **The suite ran as root in the first place.** It now runs as the service user,
+  which is both more honest (the files a test writes get the ownership the
+  service will have) and a real check that the service user can read the
+  checkout and write `state/`. The installer normalises the install tree's modes
+  first, because `rsync -a` and `tar -p` preserve a source mode of 600 and a
+  checkout copied under a restrictive umask can carry one.
 
 A good first session is: run the tests, run `deploy/run_paper_telegram.sh 5` and
 confirm a message arrives, then decide with the owner whether the next step is
@@ -125,7 +148,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 272 tests, offline, ~0.8s
+python3 -m pytest tests -q                      # 275 tests, offline, ~1.0s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 python3 telegram_check.py                       # bot can reach the chat, sends one message

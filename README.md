@@ -10,7 +10,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (272 tests), and then runs the read-only
+dependencies, runs the offline suite (275 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
