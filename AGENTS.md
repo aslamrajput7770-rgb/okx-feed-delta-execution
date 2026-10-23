@@ -11,7 +11,7 @@ You are working on an order-flow engine. It reads perpetual trade flow from
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 269 passed
+   `python3 -m pytest tests -q` -> 272 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -86,7 +86,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 269 tests, offline, ~0.7s
+python3 -m pytest tests -q                      # 272 tests, offline, ~0.8s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 python3 telegram_check.py                       # bot can reach the chat, sends one message
