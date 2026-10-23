@@ -1,10 +1,40 @@
-# OKX feed → Delta Exchange India execution
+# OKX feed -> Delta Exchange India execution
 
 Order-flow analytics driven by **OKX perpetual trade flow**, with orders placed
-on **Delta Exchange India** (`BTCUSD`, product id `27`).
+on **Delta Exchange India**.
 
-This is a port of `morning-order-flow-real-engine-compete`. The analytics engine
-is unchanged; the market-data feed and the session calendar are replaced.
+## Quickstart
+
+On a machine with nothing but a shell and this repository:
+
+    ./bootstrap.sh
+
+That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
+dependencies, runs the offline suite (166 tests), and then runs the read-only
+venue preflight. It sends no orders.
+
+Then:
+
+    ./deploy/run_paper.sh 5        # live feed, reports the order, sends nothing
+    make help                      # the same entry points, as make targets
+
+To place real orders, set a size and use the other runner:
+
+    DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5
+
+`run_paper.sh` never passes `--execute`, and `run_live.sh` refuses to start
+without an explicit size, so enabling trading is a deliberate act rather than a
+flag appended to the command already in your shell history.
+
+Credentials come from the environment (`DELTA_API_KEY`, `DELTA_API_SECRET`) or
+from `config/delta.env`. Never pass them as command-line arguments; arguments
+are visible in `ps`.
+
+`AGENTS.md` carries the operational detail: where it runs, the invariants that
+have silent failure modes, the venue behaviour that was measured rather than
+assumed, and the known gaps. Read it before changing anything.
+
+---
 
 ## Read this first
 
