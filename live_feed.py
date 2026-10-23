@@ -129,7 +129,8 @@ def main(argv=None) -> int:
     ap.add_argument("--execute", action="store_true", help="place orders")
     ap.add_argument("--live", action="store_true", help="mainnet, not testnet")
     ap.add_argument("--order-size", type=float, default=0.0,
-                    help="base-currency exposure per signal; 0 means no orders")
+                    help="base-currency exposure per signal; with no --execute this "
+                         "only reports the order it would send")
     ap.add_argument("--basis-warn", type=float, default=0.5,
                     help="refuse to trade when |basis| exceeds this percent")
     args = ap.parse_args(argv)
@@ -193,7 +194,10 @@ def main(argv=None) -> int:
               "That is a failure, not a quiet market.", file=sys.stderr)
         return 1
 
-    if args.execute:
+    # Resolve and size the order whenever a size was requested, not only when
+    # orders are enabled. A dry run that skips this prints nothing about what it
+    # would have done, which is the one thing it exists to show.
+    if args.order_size > 0:
         # Resolve by symbol, never by a hardcoded id: production carries the
         # perpetual on id 27 while testnet carries an expired future there.
         try:
@@ -210,7 +214,15 @@ def main(argv=None) -> int:
             print(f"  note: {'; '.join(product.grid_problems(DELTA_BTCUSD))}")
 
         order = contracts_for_base(exec_instrument, args.order_size, DELTA_PERP_RULES)
+        side = "buy" if chart.cumulative_delta > 0 else "sell"
+        print(f"signal       : cumulative delta {chart.cumulative_delta:g} -> {side}")
         print(f"order size   : {order}")
+
+        if not args.execute:
+            print(f"dry run      : would send {side} {int(order.contracts)} contract(s) "
+                  f"of product_id={product.venue_id}. No request sent.")
+            return 0
+
         side_fn = client.buy if chart.cumulative_delta > 0 else client.sell
         result = side_fn(product_id=product.venue_id, size=int(order.contracts))
         print(f"order: sent={result.sent} ok={result.ok} "
