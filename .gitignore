@@ -18,8 +18,16 @@ capture*.txt
 recordings/
 reports/
 
+# Runtime state: the persisted daily loss counter. Per-host, not per-repo.
+state/
+
 # Local credential file, see config/delta.env
 config/delta.local.env
 
 # Daily loss counter written by the risk layer at runtime.
 state/
+
+# Telegram bot credentials, if ever kept in a file. They belong in the
+# environment (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID), never in the repository.
+config/telegram.local.env
+telegram.env

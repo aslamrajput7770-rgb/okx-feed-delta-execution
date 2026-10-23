@@ -11,7 +11,7 @@ You are working on an order-flow engine. It reads perpetual trade flow from
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 223 passed
+   `python3 -m pytest tests -q` -> 269 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -72,16 +72,26 @@ Never pass a secret as a command-line argument; arguments are visible in `ps`.
 Never add an `api_secret` constructor argument. `DeltaCredentials.from_env()` is
 the only entry point.
 
+Telegram is a **separate, optional** pair: `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID`, read by `TelegramCredentials.from_env()`. The difference in
+posture is deliberate. A missing Delta pair is fatal because the run cannot
+resolve the venue; a missing Telegram pair is silence, because notifying is a
+convenience and a run without it is still a valid run. `--telegram` turns the
+silence into an error, so a run that thinks it is notifying and is not refuses to
+start instead.
+
 The key is IP-locked. A request from any other address returns
 `ip_not_whitelisted_for_api_key`, which also names the offending `client_ip`.
 
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 223 tests, offline, ~0.3s
+python3 -m pytest tests -q                      # 269 tests, offline, ~0.7s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
+python3 telegram_check.py                       # bot can reach the chat, sends one message
 ./deploy/run_paper.sh 5                         # 5 min, live host, NO orders
+./deploy/run_paper_telegram.sh 5                # 5 min, NO orders, signals to Telegram
 DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5   # real orders, needs the size
 python3 live_feed.py --dry-run                  # offline synthetic tape, no socket
 python3 live_feed.py --minutes 1 --record c.txt # live OKX feed, no orders
@@ -96,6 +106,25 @@ not a report.
 an explicit `DELTA_ORDER_SIZE` and has no default. The split is deliberate:
 enabling trading should take a distinct command, not a flag appended to the one
 already in your shell history.
+
+**The feed is run exactly once.** `main()` attaches the supervisor to the single
+`feed.run()` pass. Running it twice does not work, and this was a real bug: dedup
+is on `(instId, tradeId)`, so a second pass over the same frames delivers zero
+trades to its callback. The supervised pass therefore traded nothing while the
+first pass reported a healthy feed — visible as `entries=0` on any offline
+replay, where the two passes see identical frames. Anything the run needs in
+order to decide must be resolved before the first frame arrives.
+
+**Paper mode runs the real supervisor**, with `execute=False`. `--order-size`
+with `--telegram` and no `--execute` therefore produces the same entries, exits
+and notifications a live run would, minus the request. A paper path that skipped
+the supervisor would prove nothing about the live path.
+
+**`--telegram-every-signal` is off by default on purpose.** The signal is the sign
+of cumulative delta, which flips rarely but stays put for every tick that keeps
+it; notifying per tick would send thousands of identical messages. The flag
+notifies on a change of sign while flat, which is useful for a short test and
+noisy over a session.
 
 **`--dry-run` and `--replay` are offline and must stay offline.** `--dry-run`
 replays a synthetic tape (`dry_run_frames`); `--replay` replays a capture. Neither
@@ -227,12 +256,13 @@ and should keep saying so.
 
 **No persistence.** Sessions are in memory. A restart loses the day's profile.
 
-**`live_feed.py` has no reconnection logic.** `_LiveOkxTransport.recv()` turns a
-socket exception into `None`, and because `is_live` is `True` the loop treats
-`None` as an idle second and keeps waiting. A dead socket therefore looks like a
-quiet market until `--minutes` expires. `FeedStats.reconnects` exists and is
-never incremented. (The bound is what ends the run now; before, an unbounded run
-had no exit at all.)
+**Reconnection exists now, and the drop is told apart from silence.** A dead
+socket and a quiet one both make `recv` return nothing, so `dead` is set when
+`recv` raises anything other than a timeout, and a failed heartbeat reconnects
+rather than raising out of `run()`. A heartbeat that succeeds proves nothing (a
+half-open socket still accepts the write), so silence past
+`reconnect_after_seconds` is also a drop. `FeedStats.reconnects` is incremented
+and reported.
 
 **One position at a time.** The engine computes cumulative delta over the session
 and the `Supervisor` loop enters on the sign of that delta, watches the position
@@ -260,6 +290,28 @@ the raw sign of cumulative delta, and re-entry after an exit is immediate
 whenever the signal still points the same way. Treat it as a plumbing
 demonstration with working guards, not a tuned strategy.
 
+**One signal, one position.** The supervisor holds at most one position at a
+time, checking the exit before considering an entry. The `--basis-warn` guard,
+the mainnet confirmation flag and the zero-delta check bound what this can do,
+and the risk limits cap it, but none of them is a claim that the signal has an
+edge.
+
+**No cooldown between an exit and the next entry.** The signal is still positive
+after a stop loss fires, so the next tick re-enters. A run can therefore walk
+into the same loss repeatedly until the daily budget halts it. The daily loss
+limit is what stops this, not the strategy.
+
+**Reported PnL is measured at the OKX price, not at a Delta fill.** The exit
+price is the last OKX trade price, and no fill, fee or slippage from the
+execution venue enters the number. It is the price the signal was computed from,
+not the price the position would have been closed at, so `realized pnl` is an
+upper bound at best. Reading the real fill requires a position query this
+repository does not make.
+
+**No backtest, and no evidence the signal has an edge.** Nothing here measures
+whether the strategy makes money. The tests measure the plumbing. Treat any
+profitability claim about this repository as unverified until a backtest exists.
+
 ## Things not to do
 
 - Do not add a Binance feed. Binance returns HTTP 451 from this environment
@@ -270,3 +322,11 @@ demonstration with working guards, not a tuned strategy.
 - Do not default `dry_run` to False.
 - Do not make `diagnose_okx.py` exit 0 on a `SUSPECT` or `FAIL` verdict.
 - Do not commit a private key, and do not ask for one in chat.
+- Do not commit a Telegram bot token or chat id either. They go in the
+  environment like the Delta pair; a committed token is a token anyone can post
+  with.
+- Do not let a notification failure raise. The notifier is called from a tick
+  callback that is watching an open position; an exception there abandons the
+  feed. `DeliveryResult` exists so the failure can be logged and swallowed.
+- Do not notify from inside `RiskManager`. It is pure by design, and the
+  supervisor is the layer that owns I/O.

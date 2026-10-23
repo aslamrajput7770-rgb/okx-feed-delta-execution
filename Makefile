@@ -6,7 +6,7 @@ PY := ./.venv/bin/python
 PAPER_MINUTES ?= 5
 PAPER_ORDER_SIZE ?= 0.001
 
-.PHONY: help setup test dry preflight paper live feed diagnose clean
+.PHONY: help setup test dry preflight paper paper-tg telegram-check live feed diagnose clean
 
 help:
 	@echo "make setup      install dependencies and run the tests"
@@ -14,6 +14,8 @@ help:
 	@echo "make dry        offline dry run, synthetic tape, no socket, no order"
 	@echo "make preflight  read-only venue check (live host, no orders)"
 	@echo "make paper      live feed, reports the order, sends nothing  [PAPER_MINUTES=5]"
+	@echo "make paper-tg   live feed, signals to Telegram, sends nothing"
+	@echo "make telegram-check  prove the bot can reach the chat"
 	@echo "make live       REAL ORDERS - needs DELTA_ORDER_SIZE set"
 	@echo "make feed       raw OKX feed capture, no execution leg"
 	@echo "make clean      remove the virtualenv and caches"
@@ -33,6 +35,12 @@ preflight:
 
 paper:
 	./deploy/run_paper.sh $(PAPER_MINUTES)
+
+paper-tg:
+	./deploy/run_paper_telegram.sh $(PAPER_MINUTES)
+
+telegram-check:
+	$(PY) telegram_check.py
 
 # Not a default target, and the runner itself refuses without DELTA_ORDER_SIZE.
 live:

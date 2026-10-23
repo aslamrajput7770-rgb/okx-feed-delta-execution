@@ -10,13 +10,20 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (223 tests), and then runs the read-only
+dependencies, runs the offline suite (269 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
 
     ./deploy/run_paper.sh 5        # live feed, reports the order, sends nothing
     make help                      # the same entry points, as make targets
+
+To watch the signals on a phone instead of a terminal, create a bot with
+@BotFather and run:
+
+    export TELEGRAM_BOT_TOKEN=...  TELEGRAM_CHAT_ID=...
+    python3 telegram_check.py                       # proves the bot can post
+    ./deploy/run_paper_telegram.sh 5                # live feed, signals to Telegram, no orders
 
 To place real orders, set a size and use the other runner:
 
