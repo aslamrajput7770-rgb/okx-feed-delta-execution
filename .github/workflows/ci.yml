@@ -24,6 +24,14 @@ jobs:
       # network. If a test ever starts reaching out, it fails here.
       - run: python -m pytest tests -q
 
+      # The backtest harness must stay importable and must still measure the
+      # shipped rules. A syntax error here would not show up until someone tried
+      # to run a backtest on a host.
+      - name: the backtest tools import
+        run: |
+          python -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ('tools/backtest.py','tools/fetch_okx.py')]"
+          python tools/backtest.py --help > /dev/null
+
       # A test that writes into the checkout leaves files behind for the next
       # job and, on a real host, for the service user. This is the check that
       # caught a root-owned state/daily_pnl.json.

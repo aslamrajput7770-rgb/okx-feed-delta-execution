@@ -166,6 +166,24 @@ installer end to end on a clean runner, including a paper session as the service
 user. Reading the installer would not have caught either install defect; running
 it did. If you change `deploy/`, that job is the one to watch.
 
+### Backtesting
+
+`tools/fetch_okx.py` pulls real OKX trade prints into a replay tape;
+`tools/backtest.py` runs the shipped signal loop over that tape. The backtest
+imports `live_feed` and drives the real `Supervisor`, so it measures the rules
+that run in production rather than a copy of them.
+
+```bash
+python3 tools/fetch_okx.py --hours 6 --out tape_6h.txt     # real prints
+python3 tools/fetch_okx.py --days 7 --out tape_7d.txt      # binary-searches back
+python3 tools/backtest.py --tape tape_6h.txt               # shipped rules
+python3 tools/backtest.py --tape tape_6h.txt --grid-stop 0.25:3.0:0.25
+python3 tools/backtest.py --tape tape_6h.txt --verify-delta  # slow, self-checks
+```
+
+Fills are simulated at the print price plus cost; the strategy, risk ladder and
+exit logic are the shipped code paths. See `docs/backtest.md` for the results.
+
 ## As a service
 
 `deploy/aws_setup.sh` installs the project as a systemd unit on an EC2 instance.
