@@ -1,0 +1,104 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements.txt
+      # The suite is offline by design, so this needs no credentials and no
+      # network. If a test ever starts reaching out, it fails here.
+      - run: python -m pytest tests -q
+
+      # A test that writes into the checkout leaves files behind for the next
+      # job and, on a real host, for the service user. This is the check that
+      # caught a root-owned state/daily_pnl.json.
+      - name: the suite must not modify the checkout
+        run: |
+          git status --porcelain > /tmp/dirty
+          if [ -s /tmp/dirty ]; then
+            echo "the test suite wrote into the checkout:"
+            cat /tmp/dirty
+            exit 1
+          fi
+
+  install:
+    name: installer, end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This is the job that matters. Reading the installer proves nothing; the
+      # service failed to start on its first run because the suite wrote a
+      # root-owned file into the install tree. Running it here is what catches
+      # that class of defect before it reaches a host.
+      - name: install
+        run: |
+          printf '\n\n\n\n' | sudo ./deploy/aws_setup.sh
+
+      # The regression this pins: the suite left a root-owned counter in the
+      # install tree, and the service - an unprivileged user - could not write
+      # it, so it died on its first run in paper mode. The run itself reaches
+      # OKX, which a runner may not manage, so this asserts the thing that was
+      # broken - the service user can own and write its state - and tolerates a
+      # clean stop either way.
+      - name: the service user can run a paper session
+        run: |
+          set +e
+          sudo -u okxfeed env \
+            SERVICE_MODE=paper SERVICE_MINUTES=0.2 BAR_SECONDS=30 \
+            PAPER_ORDER_SIZE=0.001 \
+            TELEGRAM_BOT_TOKEN=123456:notarealtoken TELEGRAM_CHAT_ID=1 \
+            PYTHONPYCACHEPREFIX=/tmp/pycache \
+            /opt/okx-feed-delta/deploy/run_service.sh 2>&1 | tee /tmp/session.log
+          rc=${PIPESTATUS[0]}
+          echo "exit=$rc"
+
+          if grep -q "PermissionError" /tmp/session.log; then
+            echo "the service could not write its own state:"; exit 1
+          fi
+          # 0 is a clean bounded run; 130 is SIGTERM, which is how systemd stops it.
+          test "$rc" -eq 0 -o "$rc" -eq 130
+
+      - name: the daily counter was written by the service user
+        run: |
+          sudo test -f /opt/okx-feed-delta/state/daily_pnl.json
+          sudo test "$(stat -c %U /opt/okx-feed-delta/state/daily_pnl.json)" = okxfeed
+
+      # The two refusals are the safety story. If either starts succeeding, the
+      # service can be started in a configuration nobody intended.
+      - name: live mode is refused without its acknowledgements
+        run: |
+          set +e
+          sudo -u okxfeed env SERVICE_MODE=live SERVICE_MINUTES=0.1 \
+            TELEGRAM_BOT_TOKEN=x TELEGRAM_CHAT_ID=y \
+            /opt/okx-feed-delta/deploy/run_service.sh
+          test $? -eq 2
+
+      - name: a missing Telegram pair is refused
+        run: |
+          set +e
+          sudo -u okxfeed env SERVICE_MODE=paper SERVICE_MINUTES=0.1 \
+            /opt/okx-feed-delta/deploy/run_service.sh
+          test $? -eq 1
+
+      - name: the unit is syntactically valid
+        run: |
+          sudo systemd-analyze verify /etc/systemd/system/okx-feed-delta.service
+
+      - name: install is idempotent
+        run: printf '\n\n\n\n' | sudo ./deploy/aws_setup.sh
