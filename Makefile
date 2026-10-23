@@ -6,7 +6,7 @@ PY := ./.venv/bin/python
 PAPER_MINUTES ?= 5
 PAPER_ORDER_SIZE ?= 0.001
 
-.PHONY: help setup test dry preflight paper paper-tg telegram-check live feed diagnose clean
+.PHONY: help setup test dry preflight paper paper-tg telegram-check live feed diagnose service-install service-start service-logs service-stop clean
 
 help:
 	@echo "make setup      install dependencies and run the tests"
@@ -18,6 +18,10 @@ help:
 	@echo "make telegram-check  prove the bot can reach the chat"
 	@echo "make live       REAL ORDERS - needs DELTA_ORDER_SIZE set"
 	@echo "make feed       raw OKX feed capture, no execution leg"
+	@echo "make service-install  install as a systemd service (needs sudo), paper mode"
+	@echo "make service-start    start it"
+	@echo "make service-logs     follow the journal"
+	@echo "make service-stop     stop it cleanly (closes the position)"
 	@echo "make clean      remove the virtualenv and caches"
 
 setup:
@@ -52,6 +56,20 @@ feed:
 
 diagnose:
 	$(PY) diagnose_okx.py capture.txt
+
+# The service targets wrap systemd rather than duplicating it: the unit file is
+# the definition, and these are only shorter to type.
+service-install:
+	sudo ./deploy/aws_setup.sh
+
+service-start:
+	sudo systemctl start okx-feed-delta
+
+service-logs:
+	journalctl -u okx-feed-delta -f
+
+service-stop:
+	sudo systemctl stop okx-feed-delta
 
 clean:
 	rm -rf .venv .pytest_cache __pycache__ */__pycache__ */*/__pycache__

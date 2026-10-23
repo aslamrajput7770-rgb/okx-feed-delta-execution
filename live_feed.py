@@ -30,12 +30,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:  # Optional: only live mode needs it, and the offline paths must not.
+    import websocket  # type: ignore
+except ImportError:  # pragma: no cover - exercised by the ImportError path
+    websocket = None  # type: ignore[assignment]
 
 from orderflow import (
     DELTA_BTCUSD,
@@ -102,15 +108,21 @@ class _LiveOkxTransport:
         self.timeout = timeout
         self._ws = None
         self.recorded: list[str] = []
+        #: Set once a recv fails. A closed socket returns nothing on every later
+        #: call, so without this the loop cannot tell a dead socket from a quiet
+        #: one and heartbeats into the void.
+        self.dead = False
 
     def connect(self) -> None:
-        try:
-            import websocket  # type: ignore
-        except ImportError as exc:
+        if websocket is None:
             raise ImportError(
                 "live mode needs 'websocket-client': pip install websocket-client"
-            ) from exc
+            )
         self._ws = websocket.create_connection(self.uri, timeout=self.timeout)
+        # A reconnect reuses this object, so the drop flag is cleared here rather
+        # than in __init__: a stale flag would force a reconnect on the first
+        # quiet second of the new socket.
+        self.dead = False
 
     def send(self, data, binary: bool = False) -> None:
         if self._ws is None:
@@ -128,7 +140,13 @@ class _LiveOkxTransport:
             self._ws.settimeout(timeout)
         try:
             raw = self._ws.recv()
-        except Exception:
+        except Exception as exc:
+            if websocket is not None and isinstance(exc, websocket.WebSocketTimeoutException):
+                # A quiet second is normal on a live socket, and is not a drop.
+                return None
+            # Anything else is the socket going away. Recorded, because the next
+            # call returns nothing too and would otherwise read as idle.
+            self.dead = True
             return None
         if isinstance(raw, str):
             self.recorded.append(raw)
@@ -493,6 +511,32 @@ def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1) -> list
     return frames
 
 
+def _exit_on_sigterm() -> None:
+    """Make SIGTERM behave like Ctrl-C.
+
+    This is what a service manager sends: `systemctl stop` and an EC2 instance
+    stop both deliver SIGTERM, never SIGINT. Without this the interpreter dies on
+    the default disposition, so the `KeyboardInterrupt` handlers that close the
+    position and save the daily counter never run. The position is abandoned and
+    the loss budget resets on restart, which is the one moment the risk limits
+    matter most.
+
+    Raising `KeyboardInterrupt` rather than exiting from the handler keeps the
+    shutdown on the single path that already exists, so there is one place where
+    a position is closed rather than two that can drift.
+    """
+    def handler(signum, frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):  # pragma: no cover - non-main thread
+                pass
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="OKX feed -> Delta India execution")
     ap.add_argument("--instruments", nargs="+", default=DEFAULT_INSTRUMENTS)
@@ -537,7 +581,15 @@ def main(argv=None) -> int:
     ap.add_argument("--telegram-every-signal", action="store_true",
                     help="also notify on each signal change while flat, not only on "
                          "entries and exits. Noisy on a live feed; useful for a test")
+    ap.add_argument("--max-reconnects", type=int, default=None,
+                    help="give up after this many socket drops (default: retry "
+                         "forever, which is what a service wants). Set a bound when "
+                         "a silent feed is worse than a stopped one.")
     args = ap.parse_args(argv)
+
+    # Installed before any socket is opened, so a stop signal that arrives during
+    # the run is handled the same way a Ctrl-C is.
+    _exit_on_sigterm()
 
     if args.execute and args.order_size <= 0:
         print("--execute needs a positive --order-size", file=sys.stderr)
@@ -754,7 +806,11 @@ def main(argv=None) -> int:
         supervisor.on_trade(trade, event, cumulative_delta=cum)
 
     try:
-        stats = feed.run(on_trade, max_seconds=max_seconds)
+        stats = feed.run(
+            on_trade,
+            max_seconds=max_seconds,
+            max_reconnects=args.max_reconnects,
+        )
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         if supervisor is not None:
@@ -769,7 +825,9 @@ def main(argv=None) -> int:
 
     print(f"frames={stats.frames} trades={stats.trades} "
           f"duplicates={stats.duplicates} control={stats.control_frames} "
-          f"errors={stats.protocol_errors}")
+          f"errors={stats.protocol_errors} reconnects={stats.reconnects}")
+    if stats.last_error:
+        print(f"last error  : {stats.last_error}", file=sys.stderr)
     print(f"bars={len(chart.bars)} volume={chart.session_volume:g} "
           f"cum_delta={chart.cumulative_delta:g}")
 
@@ -813,7 +871,9 @@ def main(argv=None) -> int:
 
     for err in supervisor.notify_errors:
         print(f"  NOTIFY FAILED: {err}", file=sys.stderr)
-    return 0
+    # A stopped loop or a position left open at the venue is not a successful
+    # run, and the exit code is how a service manager and a script both see it.
+    return 1 if (supervisor.stopped or supervisor.manager.position is not None) else 0
 
 
 if __name__ == "__main__":

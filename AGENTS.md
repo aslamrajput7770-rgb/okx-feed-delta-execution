@@ -99,6 +99,46 @@ python3 diagnose_okx.py c.txt                   # side-mapping verdict
 python3 live_feed.py --replay c.txt             # offline replay
 ```
 
+## As a service
+
+`deploy/aws_setup.sh` installs the project as a systemd unit on an EC2 instance.
+Everything it needs is in this repository, including the unit file and the mode
+switch, so the deployed code and the deployed configuration cannot drift apart:
+the clone is the deployment.
+
+```bash
+sudo ./deploy/aws_setup.sh          # install; does not start, does not go live
+sudo systemctl start okx-feed-delta
+journalctl -u okx-feed-delta -f
+```
+
+Two environment files, so the one edited to change behaviour is not the one
+holding a credential:
+
+    /etc/okx-feed-delta/env          DELTA_* and TELEGRAM_*, mode 600
+    /etc/okx-feed-delta/service.env  SERVICE_MODE and timings, mode 600
+
+`SERVICE_MODE=paper` is the installed default. `SERVICE_MODE=live` additionally
+requires `DELTA_ORDER_SIZE` and `I_KNOW_THIS_IS_LIVE=1` in `service.env`, so
+enabling real orders takes three deliberate edits rather than one.
+
+The unit runs **bounded** windows (`SERVICE_MINUTES`, default 60) and
+`Restart=always`. That is deliberate:
+
+* the daily loss counter is per-day, and a restart notices midnight for free;
+* a bounded clean exit makes `systemctl status` readable, where an unbounded run
+  that died is indistinguishable from one that is fine;
+* the engine refuses `--minutes 0` on a live socket, and the service does not
+  weaken that guard.
+
+`TimeoutStopSec=60` is longer than the default because a stop signal is a
+request to close the position, and killing the process mid-close is exactly the
+abandoned-position case the SIGTERM handler exists to prevent.
+
+The script does not create infrastructure. EC2 instances, security groups and
+key pairs belong in the account's own IaC; a setup script that can create
+infrastructure is one that can delete it.
+
 `diagnose_okx.py` exits non-zero when the verdict is not `OK`. It is a check,
 not a report.
 
@@ -162,6 +202,25 @@ These are load-bearing. Each one has a silent failure mode if broken.
 volume on the ask = `Side.BUY`. Inverting this inverts every signal while
 leaving the footprint looking correct.
 `tests/test_okx_protocol.py::TestTakerSideMapping` catches it.
+
+**A dropped socket is reconnected, never heartbeated forever.** A dead socket
+and a quiet one both make `recv` return nothing, so the loop cannot tell them
+apart from the return value alone. `_LiveOkxTransport.dead` is set when `recv`
+raises anything other than a timeout, and `_heartbeat()` is guarded so a failed
+ping reconnects instead of raising out of `run()`. A heartbeat that *succeeds*
+proves nothing — a half-open TCP socket accepts the write — so silence past
+`reconnect_after_seconds` also counts as a drop. Backoff is capped at 30s so an
+outage is not a request storm. `stats.reconnects` is printed and sent in the run
+summary, because a feed that is quietly reconnecting is a feed with a problem.
+`tests/test_feed_resilience.py` pins all of this.
+
+**SIGTERM is handled like Ctrl-C.** `systemctl stop` and an EC2 stop send
+SIGTERM, never SIGINT. `_exit_on_sigterm()` maps SIGTERM and SIGHUP onto
+`KeyboardInterrupt`, which is the path that already closes the position and
+saves the daily counter. Without it the interpreter dies on the default
+disposition, the position is abandoned and the loss budget resets on restart —
+the one moment the risk limits matter most. Installed at the top of `main()`,
+before any socket is opened.
 
 **Dedup is on `(instId, tradeId)`.** Not `tradeId` alone: ids are only unique
 within an instrument. A reconnect replays trades and double-counts volume.

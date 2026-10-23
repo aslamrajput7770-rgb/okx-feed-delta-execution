@@ -314,17 +314,50 @@ class OkxTradeFeed:
         on_frame: Callable[[object], None] | None = None,
         max_frames: int | None = None,
         max_seconds: float | None = None,
+        max_reconnects: int | None = None,
+        reconnect_after_seconds: float = 30.0,
     ) -> FeedStats:
         """Consume frames until the transport is exhausted or a bound is hit.
 
         A bound is not optional in production: a live socket never exhausts, so
         `max_seconds` is what stops a run from running away.
+
+        A live socket also breaks, and a broken one looks exactly like a quiet
+        one: `recv` returns nothing either way. The two are told apart here, and
+        a drop is reconnected rather than heartbeated forever. `reconnects` in
+        the stats counts how often that happened, because a feed that is quietly
+        reconnecting every minute is a feed with a problem.
         """
-        transport = self.transport_factory()
-        transport.connect()
-        transport.send(subscribe_message(self.inst_ids))
+        transport = None
+        idle_since: float | None = None
         started = time.monotonic()
+        reconnects = 0
+
+        def connect() -> Transport:
+            t = self.transport_factory()
+            t.connect()
+            t.send(subscribe_message(self.inst_ids))
+            return t
+
+        def reconnect(reason: str) -> Transport | None:
+            nonlocal reconnects
+            if max_reconnects is not None and reconnects >= max_reconnects:
+                self.stats.last_error = f"reconnect limit reached ({reason})"
+                return None
+            reconnects += 1
+            self.stats.reconnects = reconnects
+            self.stats.last_error = reason
+            time.sleep(self._backoff(reconnects))
+            try:
+                return connect()
+            except Exception as exc:
+                # A venue outage must not take the process down: systemd is not
+                # the recovery path for a dropped socket, this loop is.
+                self.stats.last_error = f"reconnect failed: {type(exc).__name__}: {exc}"
+                return None
+
         try:
+            transport = connect()
             while True:
                 if max_frames is not None and self.stats.frames >= max_frames:
                     break
@@ -332,15 +365,39 @@ class OkxTradeFeed:
                     break
 
                 raw = transport.recv(timeout=1.0)
-                if raw is None:
-                    if transport.is_live:
-                        # Idle, not finished. Keep waiting: on a live socket a
-                        # quiet second is normal. Treating it as the end kills
-                        # the feed on the first lull.
-                        transport.heartbeat()
-                        continue
-                    break
 
+                if raw is None:
+                    if not transport.is_live:
+                        # A replay is exhausted, and that is the end of the run.
+                        break
+                    # A live socket is never finished, only quiet or broken.
+                    broken = getattr(transport, "dead", False)
+                    if broken:
+                        reason = "socket dropped: recv failed"
+                    elif not self._heartbeat(transport):
+                        # The heartbeat already recorded why it failed.
+                        reason = self.stats.last_error or "heartbeat failed"
+                        broken = True
+                    else:
+                        # Quiet is normal, so wait. Only silence past the limit
+                        # means the socket is half-open: TCP still accepts the
+                        # write, so a heartbeat succeeds and proves nothing.
+                        if idle_since is None:
+                            idle_since = time.monotonic()
+                        if time.monotonic() - idle_since > reconnect_after_seconds:
+                            broken = True
+                            reason = (f"no data for {reconnect_after_seconds:g}s")
+                    if not broken:
+                        continue
+                    idle_since = None
+                    transport.close()
+                    replacement = reconnect(reason)
+                    if replacement is None:
+                        break
+                    transport = replacement
+                    continue
+
+                idle_since = None
                 self.stats.frames += 1
                 if on_frame is not None:
                     on_frame(raw)
@@ -367,8 +424,23 @@ class OkxTradeFeed:
                     self.stats.trades += 1
                     on_trade(ev.to_trade(), ev)
         finally:
-            transport.close()
+            if transport is not None:
+                transport.close()
         return self.stats
+
+    def _heartbeat(self, transport: Transport) -> bool:
+        """Ping the venue. False means the socket is gone, not that it is quiet."""
+        try:
+            transport.heartbeat()
+            return True
+        except Exception as exc:
+            self.stats.last_error = f"heartbeat failed: {type(exc).__name__}: {exc}"
+            return False
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        """Capped exponential backoff, so a venue outage is not hammered."""
+        return min(2.0 ** min(attempt, 5), 30.0)
 
 
 def record_frames(frames: Iterable[bytes | str], path) -> None:

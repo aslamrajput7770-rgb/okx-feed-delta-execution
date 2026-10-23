@@ -291,6 +291,25 @@ explicit size:
 The separation is deliberate: enabling trading should take a distinct command
 rather than a flag appended to the one already in your shell history.
 
+### Running as a service
+
+On the host that holds the whitelisted IP, install it as a systemd unit:
+
+    sudo ./deploy/aws_setup.sh        # installs, does not start, does not go live
+    sudo systemctl start okx-feed-delta
+    journalctl -u okx-feed-delta -f
+
+The unit file and the mode switch are both in this repository, so the deployed
+code and the deployed configuration cannot drift: the clone is the deployment.
+`SERVICE_MODE=paper` is the installed default; going live takes three explicit
+edits in `/etc/okx-feed-delta/service.env` (`SERVICE_MODE=live` plus
+`DELTA_ORDER_SIZE` and `I_KNOW_THIS_IS_LIVE=1`).
+
+It runs bounded windows and restarts itself, so the per-day loss counter resets
+at midnight for free. `systemctl stop` closes any open position and saves that
+counter before exiting: SIGTERM is handled as a request to shut down cleanly,
+not as a kill.
+
 ### Verifying that nothing was sent
 
 The account's own history is the check that matters:

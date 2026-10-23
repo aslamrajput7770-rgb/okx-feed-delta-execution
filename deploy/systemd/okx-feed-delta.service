@@ -1,0 +1,52 @@
+[Unit]
+Description=OKX feed -> Delta India execution (paper by default)
+Documentation=file:///opt/okx-feed-delta/AGENTS.md
+# The venue is the dependency that matters. Without it the unit would start,
+# fail to resolve a product, and restart in a loop that looks like a crash.
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=okxfeed
+Group=okxfeed
+WorkingDirectory=/opt/okx-feed-delta
+
+# Secrets, then the mode. Two files so the one that is edited to change
+# behaviour is not the one holding a credential.
+EnvironmentFile=/etc/okx-feed-delta/env
+EnvironmentFile=/etc/okx-feed-delta/service.env
+
+ExecStart=/opt/okx-feed-delta/deploy/run_service.sh
+
+# A stop signal is a request to close the position, and that takes as long as
+# the venue takes. Too short a timeout here kills the process mid-close, which
+# is exactly the abandoned-position case the SIGTERM handler exists to prevent.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+KillMode=mixed
+
+# The run is bounded (see MINUTES in service.env), so a clean exit is normal and
+# is not a failure. Restart=always brings the next window up either way, and the
+# daily loss counter persists in state/ across the gap.
+Restart=always
+RestartSec=10
+
+# Modest hardening. The process needs the network and its own directory, and
+# nothing else. ProtectSystem=strict would need state/ and the venv writable,
+# so the paths are listed rather than the whole tree being opened.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/okx-feed-delta/state
+# The venue signs with a timestamp, so the clock is part of the protocol.
+ProtectClock=false
+
+# Journald is the log. `journalctl -u okx-feed-delta -f` is the whole story.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okx-feed-delta
+
+[Install]
+WantedBy=multi-user.target
