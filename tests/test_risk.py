@@ -460,3 +460,75 @@ class TestCircuitBreaker:
         s.on_trade(ticks([82000.0], start_ts=1792574800.0)[0], cumulative_delta=1.0)
         assert len(client.sent) == 2
         assert "EXIT FAILED" in " ".join(s.manager.log)
+# ------------------------------------------------------------------ notifying
+
+
+class RecordingNotifier:
+    """Captures the messages the loop would deliver, and can be made to fail."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self.sent: list[str] = []
+        self.ok = ok
+
+    def send(self, text: str):
+        from orderflow.notify import DeliveryResult
+        self.sent.append(text)
+        return DeliveryResult(ok=self.ok, error=None if self.ok else "simulated failure")
+
+
+class TestSupervisorNotifications:
+    def test_an_entry_is_announced(self):
+        n = RecordingNotifier()
+        s = supervised(RecordingClient(), notifier=n)
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert s.entries == 1
+        assert len(n.sent) == 1
+        assert "ENTRY" in n.sent[0]
+        assert "80,000.00" in n.sent[0]
+
+    def test_an_exit_is_announced_with_its_reason(self):
+        n = RecordingNotifier()
+        s = supervised(RecordingClient(), notifier=n)
+        for t in ticks([80000.0] + [80000.0 + 300 * i for i in range(1, 30)]):
+            s.on_trade(t, cumulative_delta=1.0)
+        s.close_out()
+        joined = " ".join(n.sent)
+        assert "EXIT" in joined
+        assert "take_profit" in joined
+
+    def test_the_default_notifier_is_a_silent_sink(self):
+        """A run with no Telegram must behave exactly as it did before."""
+        s = supervised(RecordingClient())
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert s.entries == 1
+        assert s.notify_errors == []
+
+    def test_a_failed_delivery_does_not_raise_and_is_recorded(self):
+        """A lost message must not abandon a feed that is watching a position."""
+        n = RecordingNotifier(ok=False)
+        s = supervised(RecordingClient(), notifier=n)
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert s.entries == 1                      # the loop kept going
+        assert s.notify_errors == ["simulated failure"]
+        assert "NOTIFY FAILED" in " ".join(s.manager.log)
+
+    def test_paper_mode_is_labelled_in_the_message(self):
+        n = RecordingNotifier()
+        s = supervised(RecordingClient(), notifier=n, execute=False, notify_mode="paper")
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert "paper" in n.sent[0]
+
+    def test_a_refused_entry_is_not_announced(self):
+        """A cap refusal is not a signal; notifying it would be noise."""
+        n = RecordingNotifier()
+        s = supervised(RecordingClient(), notifier=n,
+                       limits=RiskLimits(max_position_base=0.0001))
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
+        assert s.entries == 0
+        assert n.sent == []
+
+    def test_zero_delta_announces_nothing(self):
+        n = RecordingNotifier()
+        s = supervised(RecordingClient(), notifier=n)
+        s.on_trade(ticks([80000.0])[0], cumulative_delta=0.0)
+        assert n.sent == []

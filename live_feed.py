@@ -30,12 +30,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:  # Optional: only live mode needs it, and the offline paths must not.
+    import websocket  # type: ignore
+except ImportError:  # pragma: no cover - exercised by the ImportError path
+    websocket = None  # type: ignore[assignment]
 
 from orderflow import (
     DELTA_BTCUSD,
@@ -62,6 +68,14 @@ from orderflow.execution import (
 )
 from orderflow.feed import FileTransport, OkxTradeFeed, ReplayTransport, record_frames
 from orderflow.feed.okx import PUBLIC_WS
+from orderflow.notify import (
+    NullNotifier,
+    format_entry,
+    format_exit,
+    format_run_summary,
+    format_signal,
+    notifier_from_env,
+)
 
 DEFAULT_INSTRUMENTS = ["BTC-USDT-SWAP"]
 
@@ -94,15 +108,21 @@ class _LiveOkxTransport:
         self.timeout = timeout
         self._ws = None
         self.recorded: list[str] = []
+        #: Set once a recv fails. A closed socket returns nothing on every later
+        #: call, so without this the loop cannot tell a dead socket from a quiet
+        #: one and heartbeats into the void.
+        self.dead = False
 
     def connect(self) -> None:
-        try:
-            import websocket  # type: ignore
-        except ImportError as exc:
+        if websocket is None:
             raise ImportError(
                 "live mode needs 'websocket-client': pip install websocket-client"
-            ) from exc
+            )
         self._ws = websocket.create_connection(self.uri, timeout=self.timeout)
+        # A reconnect reuses this object, so the drop flag is cleared here rather
+        # than in __init__: a stale flag would force a reconnect on the first
+        # quiet second of the new socket.
+        self.dead = False
 
     def send(self, data, binary: bool = False) -> None:
         if self._ws is None:
@@ -120,7 +140,13 @@ class _LiveOkxTransport:
             self._ws.settimeout(timeout)
         try:
             raw = self._ws.recv()
-        except Exception:
+        except Exception as exc:
+            if websocket is not None and isinstance(exc, websocket.WebSocketTimeoutException):
+                # A quiet second is normal on a live socket, and is not a drop.
+                return None
+            # Anything else is the socket going away. Recorded, because the next
+            # call returns nothing too and would otherwise read as idle.
+            self.dead = True
             return None
         if isinstance(raw, str):
             self.recorded.append(raw)
@@ -208,6 +234,9 @@ class Supervisor:
         seed: int = 1,
         entry_gate=None,
         max_consecutive_failures: int = 3,
+        notifier=None,
+        notify_mode: str = "paper",
+        venue: str = "OKX BTC-USDT-SWAP",
     ) -> None:
         self.client = client
         self.limits = limits
@@ -228,6 +257,14 @@ class Supervisor:
         self.max_consecutive_failures = max_consecutive_failures
         self.consecutive_failures = 0
         self.stopped = False
+        #: Optional signal delivery. Defaults to a sink that drops everything, so
+        #: a run without Telegram behaves exactly as it did before this existed.
+        self.notifier = notifier if notifier is not None else NullNotifier()
+        self.notify_mode = notify_mode
+        self.venue = venue
+        #: Delivery failures, for the run log. Never fatal: a lost message must
+        #: not stop the loop that is watching an open position.
+        self.notify_errors: list[str] = []
 
         day_key = ""
         self.manager = RiskManager(
@@ -243,13 +280,27 @@ class Supervisor:
         self.exits = 0
         self._day_key = day_key
         self._last_price: float | None = None
+        self._last_ts: float | None = None
 
     # ------------------------------------------------------------------ entry
     def _client_order_id(self) -> str:
         self._seq += 1
         return f"ofd-{self._seed}-{self._seq}"
 
-    def _enter(self, side: str, price: float, ts: float) -> None:
+    def notify(self, text: str) -> None:
+        """Deliver a message, and record a failure without raising.
+
+        The loop is a tick callback: an exception here would abandon the feed and
+        leave a position unwatched, which is a far worse outcome than a lost
+        notification. This is the only place a notification is delivered, so the
+        same rule covers entries, exits, signals and the run summary.
+        """
+        result = self.notifier.send(text)
+        if not result.ok and not result.skipped:
+            self.notify_errors.append(result.error or "unknown delivery failure")
+            self.manager._note(f"NOTIFY FAILED: {result.error}")
+
+    def _enter(self, side: str, price: float, ts: float, cumulative_delta: float | None = None) -> None:
         """Size, check, and (if executing) send the entry order."""
         if self.entry_gate is not None:
             allowed, why = self.entry_gate(price)
@@ -296,6 +347,17 @@ class Supervisor:
 
         self.manager.open(position)
         self.entries += 1
+        self.notify(
+            format_entry(
+                side=side,
+                price=price,
+                size_base=sized.base,
+                contracts=int(sized.contracts),
+                cumulative_delta=cumulative_delta,
+                mode=self.notify_mode,
+                product=f"Delta India id {self.product_id}",
+            )
+        )
 
     # ------------------------------------------------------------------- exit
     def _exit(self, price: float, reason: str) -> None:
@@ -322,6 +384,17 @@ class Supervisor:
 
         self.manager.close(price, reason)
         self.exits += 1
+        self.notify(
+            format_exit(
+                side=p.side,
+                price=price,
+                entry_price=p.entry_price,
+                reason=reason,
+                pnl_quote=p.pnl_quote(price),
+                held_seconds=p.held_seconds(self._last_ts if self._last_ts else p.entry_ts),
+                mode=self.notify_mode,
+            )
+        )
 
     # ------------------------------------------------------------------- util
     def _note_failure(self, message: str) -> None:
@@ -351,6 +424,7 @@ class Supervisor:
         price = trade.price
         ts = trade.ts
         self._last_price = price
+        self._last_ts = ts
 
         day_key = str(trading_day_of(datetime.fromtimestamp(ts, tz=timezone.utc)))
         if day_key != self._day_key:
@@ -375,7 +449,7 @@ class Supervisor:
         side = order_side(cumulative_delta)
         if side is None:
             return
-        self._enter(side, price, ts)
+        self._enter(side, price, ts, cumulative_delta=cumulative_delta)
 
     # ------------------------------------------------------------ end of run
     def close_out(self, reason: str = ExitReason.END_OF_RUN) -> None:
@@ -437,6 +511,32 @@ def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1) -> list
     return frames
 
 
+def _exit_on_sigterm() -> None:
+    """Make SIGTERM behave like Ctrl-C.
+
+    This is what a service manager sends: `systemctl stop` and an EC2 instance
+    stop both deliver SIGTERM, never SIGINT. Without this the interpreter dies on
+    the default disposition, so the `KeyboardInterrupt` handlers that close the
+    position and save the daily counter never run. The position is abandoned and
+    the loss budget resets on restart, which is the one moment the risk limits
+    matter most.
+
+    Raising `KeyboardInterrupt` rather than exiting from the handler keeps the
+    shutdown on the single path that already exists, so there is one place where
+    a position is closed rather than two that can drift.
+    """
+    def handler(signum, frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):  # pragma: no cover - non-main thread
+                pass
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="OKX feed -> Delta India execution")
     ap.add_argument("--instruments", nargs="+", default=DEFAULT_INSTRUMENTS)
@@ -474,7 +574,22 @@ def main(argv=None) -> int:
     ap.add_argument("--max-order-failures", type=int, default=3,
                     help="stop after this many consecutive venue failures; a bad key "
                          "or a blocked IP fails every order the same way")
+    ap.add_argument("--telegram", action="store_true",
+                    help="send signals to Telegram. Needs TELEGRAM_BOT_TOKEN and "
+                         "TELEGRAM_CHAT_ID in the environment; a missing pair is an "
+                         "error when this flag is present, and silence otherwise")
+    ap.add_argument("--telegram-every-signal", action="store_true",
+                    help="also notify on each signal change while flat, not only on "
+                         "entries and exits. Noisy on a live feed; useful for a test")
+    ap.add_argument("--max-reconnects", type=int, default=None,
+                    help="give up after this many socket drops (default: retry "
+                         "forever, which is what a service wants). Set a bound when "
+                         "a silent feed is worse than a stopped one.")
     args = ap.parse_args(argv)
+
+    # Installed before any socket is opened, so a stop signal that arrives during
+    # the run is handled the same way a Ctrl-C is.
+    _exit_on_sigterm()
 
     if args.execute and args.order_size <= 0:
         print("--execute needs a positive --order-size", file=sys.stderr)
@@ -504,6 +619,22 @@ def main(argv=None) -> int:
 
     client = DeltaOrderClient(environment=environment, allow_live=allow_live,
                               dry_run=not args.execute)
+
+    # Telegram is opt-in. `--telegram` with no credentials is a configuration
+    # error, not a silent no-op: a run that thinks it is notifying and is not is
+    # worse than one that refuses to start.
+    notifier = NullNotifier()
+    notify_mode = "live" if args.execute else "paper"
+    if args.telegram:
+        notifier = notifier_from_env()
+        if isinstance(notifier, NullNotifier):
+            print(f"--telegram needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the "
+                  f"environment.", file=sys.stderr)
+            return 2
+        print(f"telegram   : enabled ({notify_mode} mode)")
+    else:
+        print(f"telegram   : disabled (pass --telegram to send signals)")
+
     if args.dry_run:
         print(f"venue      : offline synthetic tape ({DRY_RUN_TRADES} prints), no socket")
     elif args.replay is not None:
@@ -531,35 +662,19 @@ def main(argv=None) -> int:
         return t
 
     feed = OkxTradeFeed(args.instruments, factory)
-
-    def on_trade(trade, event):
-        chart.add(trade)
-        if args.record is not None:
-            capture.append(json.dumps({"event": "trade", "instId": event.inst_id,
-                                       "tradeId": event.trade_id}))
-
     max_seconds = args.minutes * 60.0 if args.minutes > 0 else None
-    try:
-        stats = feed.run(on_trade, max_seconds=max_seconds)
-    except KeyboardInterrupt:
-        print("\ninterrupted", file=sys.stderr)
-        return 130
-    finally:
-        holder = transport_holder.get("t")
-        if holder is not None and args.record is not None and holder.recorded:
-            record_frames(holder.recorded, args.record)
-            print(f"recorded {len(holder.recorded)} frames to {args.record}")
 
-    print(f"frames={stats.frames} trades={stats.trades} "
-          f"duplicates={stats.duplicates} control={stats.control_frames} "
-          f"errors={stats.protocol_errors}")
-    print(f"bars={len(chart.bars)} volume={chart.session_volume:g} "
-          f"cum_delta={chart.cumulative_delta:g}")
-
-    if stats.trades == 0:
-        print("no trades: the socket connected but delivered nothing. "
-              "That is a failure, not a quiet market.", file=sys.stderr)
-        return 1
+    # The feed is run exactly once, and the supervisor is attached to that one
+    # pass. Running it twice does not work: dedup is on `(instId, tradeId)`, so a
+    # second pass over the same frames delivers zero trades to its callback and
+    # the supervised pass would trade nothing while reporting a healthy feed.
+    #
+    # Everything the run needs to decide therefore has to be resolved before the
+    # first frame arrives.
+    supervisor = None
+    limits = None
+    gate = None
+    notify_mode = "live" if args.execute else "paper"
 
     # Resolve and size the order whenever a size was requested, not only when
     # orders are enabled. A dry run that skips this prints nothing about what it
@@ -609,7 +724,6 @@ def main(argv=None) -> int:
         # Only meaningful on a live feed: a replayed capture holds historical
         # prices, so comparing them to today's mark price measures the elapsed
         # time, not the basis.
-        gate = None
         if args.basis_warn > 0 and not offline:
             def gate(price: float, _limit=args.basis_warn):
                 try:
@@ -629,19 +743,25 @@ def main(argv=None) -> int:
             print(f"dry run      : would trade up to "
                   f"{int(contracts_for_base(exec_instrument, args.order_size, DELTA_PERP_RULES).contracts)} "
                   f"contract(s) of {where}, with the exits above. No request sent.")
-            return 0
 
+        # Paper mode runs the same supervisor as a live run, with `execute=False`
+        # so no request leaves the process. The loop, the risk rules and the
+        # notifications are therefore the ones a live run would use, which is the
+        # only version of paper mode worth having: a paper path that skips the
+        # supervisor proves nothing about the live path.
         supervisor = Supervisor(
             client=client,
             limits=limits,
-            product_id=product.venue_id,
+            product_id=product.venue_id if product is not None else DELTA_BTCUSD.venue_id,
             order_size_base=args.order_size,
             exec_instrument=exec_instrument,
             state_path=args.risk_state,
-            execute=True,
+            execute=args.execute,
             seed=int(time.time()),
             entry_gate=gate,
             max_consecutive_failures=args.max_order_failures,
+            notifier=notifier,
+            notify_mode=notify_mode,
         )
         if supervisor.manager.state.day_key:
             print(f"risk day     : {supervisor.manager.state.day_key} "
@@ -651,46 +771,109 @@ def main(argv=None) -> int:
                   "No orders will be sent.", file=sys.stderr)
             return 1
 
-        # The entry/exit loop is attached to the feed that is about to run, so
-        # the session is measured and traded in a single pass.
-        def on_trade_supervised(trade, event):
-            chart.add(trade)
-            if args.record is not None:
-                capture.append(json.dumps({"event": "trade", "instId": event.inst_id,
-                                           "tradeId": event.trade_id}))
-            supervisor.on_trade(trade, event, cumulative_delta=chart.cumulative_delta)
+        print(f"supervising  : entry/exit loop is live; "
+              f"{'orders are placed' if args.execute else 'paper, nothing is sent'}")
+    elif args.telegram:
+        print("telegram   : idle - pass --order-size to run the signal loop")
 
-        print("supervising  : entry/exit loop is live; positions are watched and closed")
-        try:
-            stats = feed.run(on_trade_supervised, max_seconds=max_seconds)
-        except KeyboardInterrupt:
-            print("\ninterrupted", file=sys.stderr)
+    #: The sign last announced, so `--telegram-every-signal` notifies on a change
+    #: rather than on every tick that keeps the sign.
+    last_signalled: str | None = None
+
+    def on_trade(trade, event):
+        nonlocal last_signalled
+        chart.add(trade)
+        if args.record is not None:
+            capture.append(json.dumps({"event": "trade", "instId": event.inst_id,
+                                       "tradeId": event.trade_id}))
+        if supervisor is None:
+            return
+        cum = chart.cumulative_delta
+        # An optional per-signal notice, off by default: on a live feed the sign
+        # flips rarely but the notification would still arrive on every tick that
+        # keeps it, so it is gated on the signal actually changing.
+        if args.telegram_every_signal and supervisor.manager.position is None:
+            side = order_side(cum)
+            if side is not None and side != last_signalled:
+                last_signalled = side
+                # Routed through the supervisor so a delivery failure is logged
+                # and swallowed, the same as an entry or exit notice.
+                supervisor.notify(format_signal(
+                    side=side, price=trade.price, cumulative_delta=cum,
+                    session_volume=chart.session_volume, bars=len(chart.bars),
+                    mode=notify_mode,
+                ))
+        supervisor.on_trade(trade, event, cumulative_delta=cum)
+
+    try:
+        stats = feed.run(
+            on_trade,
+            max_seconds=max_seconds,
+            max_reconnects=args.max_reconnects,
+        )
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        if supervisor is not None:
             supervisor.close_out(ExitReason.END_OF_RUN)
             supervisor.save_state()
-            return 130
+        return 130
+    finally:
+        holder = transport_holder.get("t")
+        if holder is not None and args.record is not None and holder.recorded:
+            record_frames(holder.recorded, args.record)
+            print(f"recorded {len(holder.recorded)} frames to {args.record}")
 
-        # Nothing is left open when the process returns.
-        supervisor.close_out(ExitReason.END_OF_RUN)
-        supervisor.save_state()
+    print(f"frames={stats.frames} trades={stats.trades} "
+          f"duplicates={stats.duplicates} control={stats.control_frames} "
+          f"errors={stats.protocol_errors} reconnects={stats.reconnects}")
+    if stats.last_error:
+        print(f"last error  : {stats.last_error}", file=sys.stderr)
+    print(f"bars={len(chart.bars)} volume={chart.session_volume:g} "
+          f"cum_delta={chart.cumulative_delta:g}")
 
-        print(f"trades       : entries={supervisor.entries} exits={supervisor.exits}")
-        print(f"realized pnl : {supervisor.realized:+.4f} quote")
-        if supervisor.manager.halted:
-            print("HALTED       : daily loss limit reached; trading stopped for this day.")
-        if supervisor.stopped:
-            print(f"STOPPED      : {supervisor.consecutive_failures} consecutive venue "
-                  f"failures. The venue is rejecting orders; check the credentials, "
-                  f"the whitelisted IP, and the account.", file=sys.stderr)
-        if supervisor.manager.position is not None:
-            print(f"WARNING      : a {supervisor.manager.position.side} position of "
-                  f"{supervisor.manager.position.size_base:g} base is STILL OPEN at "
-                  f"the venue. The exit could not be sent. Close it by hand.",
-                  file=sys.stderr)
-        for line in supervisor.manager.log:
-            print(f"  {line}")
-        return 1 if (supervisor.stopped or supervisor.manager.position is not None) else 0
+    if stats.trades == 0:
+        print("no trades: the socket connected but delivered nothing. "
+              "That is a failure, not a quiet market.", file=sys.stderr)
+        return 1
 
-    return 0
+    if supervisor is None:
+        return 0
+
+    # Nothing is left open when the process returns.
+    supervisor.close_out(ExitReason.END_OF_RUN)
+    supervisor.save_state()
+
+    print(f"trades       : entries={supervisor.entries} exits={supervisor.exits}")
+    print(f"realized pnl : {supervisor.realized:+.4f} quote")
+    if supervisor.manager.halted:
+        print("HALTED       : daily loss limit reached; trading stopped for this day.")
+    if supervisor.stopped:
+        print(f"STOPPED      : {supervisor.consecutive_failures} consecutive venue "
+              f"failures. The venue is rejecting orders; check the credentials, "
+              f"the whitelisted IP, and the account.", file=sys.stderr)
+    if supervisor.manager.position is not None:
+        print(f"WARNING      : a {supervisor.manager.position.side} position of "
+              f"{supervisor.manager.position.size_base:g} base is STILL OPEN at "
+              f"the venue. The exit could not be sent. Close it by hand.",
+              file=sys.stderr)
+    for line in supervisor.manager.log:
+        print(f"  {line}")
+    if args.telegram:
+        # Routed through the supervisor, so a failed summary is recorded the same
+        # way a failed entry notice is.
+        supervisor.notify(format_run_summary(
+            entries=supervisor.entries, exits=supervisor.exits,
+            realized_quote=supervisor.realized,
+            frames=stats.frames, trades=stats.trades,
+            duplicates=stats.duplicates, protocol_errors=stats.protocol_errors,
+            halted=supervisor.manager.halted, mode=notify_mode,
+        ))
+
+    for err in supervisor.notify_errors:
+        print(f"  NOTIFY FAILED: {err}", file=sys.stderr)
+    # A stopped loop or a position left open at the venue is not a successful
+    # run, and the exit code is how a service manager and a script both see it.
+    return 1 if (supervisor.stopped or supervisor.manager.position is not None) else 0
 
 
 if __name__ == "__main__":

@@ -10,13 +10,20 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (223 tests), and then runs the read-only
+dependencies, runs the offline suite (269 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
 
     ./deploy/run_paper.sh 5        # live feed, reports the order, sends nothing
     make help                      # the same entry points, as make targets
+
+To watch the signals on a phone instead of a terminal, create a bot with
+@BotFather and run:
+
+    export TELEGRAM_BOT_TOKEN=...  TELEGRAM_CHAT_ID=...
+    python3 telegram_check.py                       # proves the bot can post
+    ./deploy/run_paper_telegram.sh 5                # live feed, signals to Telegram, no orders
 
 To place real orders, set a size and use the other runner:
 
@@ -283,6 +290,25 @@ explicit size:
 
 The separation is deliberate: enabling trading should take a distinct command
 rather than a flag appended to the one already in your shell history.
+
+### Running as a service
+
+On the host that holds the whitelisted IP, install it as a systemd unit:
+
+    sudo ./deploy/aws_setup.sh        # installs, does not start, does not go live
+    sudo systemctl start okx-feed-delta
+    journalctl -u okx-feed-delta -f
+
+The unit file and the mode switch are both in this repository, so the deployed
+code and the deployed configuration cannot drift: the clone is the deployment.
+`SERVICE_MODE=paper` is the installed default; going live takes three explicit
+edits in `/etc/okx-feed-delta/service.env` (`SERVICE_MODE=live` plus
+`DELTA_ORDER_SIZE` and `I_KNOW_THIS_IS_LIVE=1`).
+
+It runs bounded windows and restarts itself, so the per-day loss counter resets
+at midnight for free. `systemctl stop` closes any open position and saves that
+counter before exiting: SIGTERM is handled as a request to shut down cleanly,
+not as a kill.
 
 ### Verifying that nothing was sent
 
