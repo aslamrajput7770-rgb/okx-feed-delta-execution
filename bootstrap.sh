@@ -71,12 +71,10 @@ say "test suite (offline, no credentials)"
 # -------------------------------------------------------------------- venue
 if [[ "$skip_venue" -eq 0 ]]; then
     say "venue preflight (read-only, no orders)"
-    if [[ -f config/delta.env ]]; then
-        set -a; . config/delta.env; set +a
-    fi
+    . deploy/load_env.sh
     if [[ -z "${DELTA_API_KEY:-}" || -z "${DELTA_API_SECRET:-}" ]]; then
         warn "DELTA_API_KEY / DELTA_API_SECRET are not set."
-        warn "Set them as environment secrets, or fill in config/delta.env,"
+        warn "Set them as platform secrets, or fill in config/delta.local.env,"
         warn "then run: ./.venv/bin/python preflight_delta.py --live"
     else
         # The key is IP-locked. Any other address answers

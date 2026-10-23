@@ -23,7 +23,7 @@ test:
 	$(PY) -m pytest tests -q
 
 preflight:
-	set -a; [ -f config/delta.env ] && . config/delta.env; set +a; \
+	. deploy/load_env.sh; \
 	$(PY) preflight_delta.py --live
 
 paper:

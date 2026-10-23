@@ -17,3 +17,6 @@ capture*.txt
 *.capture
 recordings/
 reports/
+
+# Local credential file, see config/delta.env
+config/delta.local.env
