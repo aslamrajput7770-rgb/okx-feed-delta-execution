@@ -32,8 +32,9 @@ class TestDryRun:
         rc = main(["--dry-run", "--order-size", "0.001"])
         out = capsys.readouterr().out
         assert rc == 0
-        assert "would send" in out
+        assert "would trade" in out
         assert "No request sent" in out
+        assert "risk         :" in out
 
     def test_dry_run_frames_are_deterministic(self):
         a = dry_run_frames("BTC-USDT-SWAP")
