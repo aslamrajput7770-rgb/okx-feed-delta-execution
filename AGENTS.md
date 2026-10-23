@@ -24,6 +24,45 @@ The production host is described under "Where it runs". Reach it with the key
 from the `VPS_SSH_KEY` secret if the platform provides one; otherwise ask the
 owner, and do not paste a private key into a chat.
 
+## State of play
+
+Read this before assuming anything about what is finished.
+
+**Done and on `main`.** Telegram signal delivery (`orderflow/notify/`); the feed
+runs in a single pass (it used to run twice, and the second pass - the one that
+trades - saw nothing); a dropped socket reconnects instead of raising out of
+`run()`; SIGTERM is handled like Ctrl-C, so `systemctl stop` closes the position
+and saves the daily counter. `deploy/aws_setup.sh` installs the project as a
+systemd unit, and the unit file is in the repository. 272 tests pass.
+
+**Verified, not assumed.** The OKX feed is genuinely live: its trade frames
+matched `https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP` to
+within a second, with `duplicates=0` and `errors=0`. Paper mode runs the real
+supervisor with `execute=False`, so it produces the entries, exits and
+notifications a live run would, minus the request.
+
+**Not done, and the reason matters.**
+
+1. **Nothing has been deployed.** `deploy/aws_setup.sh` has never run on a host.
+   The systemd unit is verified syntactically (`systemd-analyze verify`) and the
+   service path runs locally under `SERVICE_MODE=paper`, but the first real
+   install is still ahead. Run it in paper mode first and watch a full session.
+2. **The Delta credentials must be rotated.** They are committed in
+   `config/delta.env` at the owner's explicit instruction. Do not undo that, but
+   do tell the owner to rotate the key and the secret; a committed credential is
+   a credential that has to be considered public.
+3. **No backtest exists, so nothing here shows the strategy makes money.** The
+   tests measure the plumbing. `realized pnl` is measured at the OKX price, not
+   at a Delta fill, so it is an upper bound at best.
+4. **There is no cooldown after an exit.** The signal is still positive after a
+   stop loss fires, so the next tick re-enters; a run can walk into the same loss
+   until the daily budget halts it. This is a strategy gap, not a safety one, and
+   it is the most likely next piece of real work.
+
+A good first session is: run the tests, run `deploy/run_paper_telegram.sh 5` and
+confirm a message arrives, then decide with the owner whether the next step is
+the AWS install or the cooldown.
+
 ## What this is
 
 Ported from `morning-order-flow-real-engine-compete`, which used Angel One
