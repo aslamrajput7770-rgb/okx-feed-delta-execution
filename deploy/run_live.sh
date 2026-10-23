@@ -26,4 +26,4 @@ fi
 
 exec "$repo/.venv/bin/python" "$repo/live_feed.py" \
     --live --minutes "$minutes" --bar-seconds 30 \
-    --order-size "$DELTA_ORDER_SIZE" --execute
+    --order-size "$DELTA_ORDER_SIZE" --execute --i-know-this-is-live

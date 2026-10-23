@@ -11,7 +11,7 @@ You are working on an order-flow engine. It reads perpetual trade flow from
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 166 passed
+   `python3 -m pytest tests -q` -> 181 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -78,11 +78,12 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 166 tests, offline, ~0.2s
+python3 -m pytest tests -q                      # 181 tests, offline, ~0.2s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 ./deploy/run_paper.sh 5                         # 5 min, live host, NO orders
 DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5   # real orders, needs the size
+python3 live_feed.py --dry-run                  # offline synthetic tape, no socket
 python3 live_feed.py --minutes 1 --record c.txt # live OKX feed, no orders
 python3 diagnose_okx.py c.txt                   # side-mapping verdict
 python3 live_feed.py --replay c.txt             # offline replay
@@ -95,6 +96,34 @@ not a report.
 an explicit `DELTA_ORDER_SIZE` and has no default. The split is deliberate:
 enabling trading should take a distinct command, not a flag appended to the one
 already in your shell history.
+
+**`--dry-run` and `--replay` are offline and must stay offline.** `--dry-run`
+replays a synthetic tape (`dry_run_frames`); `--replay` replays a capture. Neither
+fetches anything, not even the product spec, so both return immediately on a
+machine with no network. `--dry-run` used to open a real socket and, with the old
+`--minutes 0` default, hang forever.
+
+**The basis check runs only on a live feed.** A capture holds historical prices,
+so comparing them to today's mark price measures elapsed time rather than the
+spread between the venues. Sizing still runs offline, from the static
+`DELTA_BTCUSD` template.
+
+**A live run needs `--minutes > 0`.** Refusing the unbounded case is what stops
+a bare invocation from hanging on a socket that never closes.
+
+**Mainnet needs a third flag.** `--execute --live` also requires
+`--i-know-this-is-live`. The guard is in the program, not only in `run_live.sh`,
+because calling `live_feed.py` directly must not be a way around it.
+
+**`--basis-warn` refuses, and it is wired.** OKX and Delta are different
+instruments, so the spread between them is risk the delta signal does not see.
+The guard reads the Delta mark price from the public ticker and returns non-zero
+when `|basis|` exceeds the limit; on a live order it also refuses when the basis
+cannot be read at all. It used to be a dead function with a flag that claimed to
+refuse and did nothing.
+
+**Zero cumulative delta is no signal.** `order_side(0.0)` returns `None` and no
+order is sent. It used to fall through to `sell`.
 
 ## Invariants
 
@@ -198,14 +227,19 @@ and should keep saying so.
 
 **No persistence.** Sessions are in memory. A restart loses the day's profile.
 
-**`live_feed.py` has no reconnection logic.** The transport returns `None` on a
-socket error and the run ends. `FeedStats.reconnects` exists and is never
-incremented.
+**`live_feed.py` has no reconnection logic.** `_LiveOkxTransport.recv()` turns a
+socket exception into `None`, and because `is_live` is `True` the loop treats
+`None` as an idle second and keeps waiting. A dead socket therefore looks like a
+quiet market until `--minutes` expires. `FeedStats.reconnects` exists and is
+never incremented. (The bound is what ends the run now; before, an unbounded run
+had no exit at all.)
 
 **One signal, one order.** The engine computes cumulative delta over the session
 and sends a single order at the end of the run, sized by `--order-size`. There is
 no entry/exit loop and no risk management. Treat it as a plumbing demonstration
-until that changes.
+until that changes. The `--basis-warn` guard, the mainnet confirmation flag and
+the zero-delta check bound what this one order can do; they are not risk
+management.
 
 ## Things not to do
 
