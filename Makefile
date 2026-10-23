@@ -4,12 +4,14 @@
 
 PY := ./.venv/bin/python
 PAPER_MINUTES ?= 5
+PAPER_ORDER_SIZE ?= 0.001
 
-.PHONY: help setup test preflight paper live feed diagnose clean
+.PHONY: help setup test dry preflight paper live feed diagnose clean
 
 help:
 	@echo "make setup      install dependencies and run the tests"
 	@echo "make test       offline test suite"
+	@echo "make dry        offline dry run, synthetic tape, no socket, no order"
 	@echo "make preflight  read-only venue check (live host, no orders)"
 	@echo "make paper      live feed, reports the order, sends nothing  [PAPER_MINUTES=5]"
 	@echo "make live       REAL ORDERS - needs DELTA_ORDER_SIZE set"
@@ -21,6 +23,9 @@ setup:
 
 test:
 	$(PY) -m pytest tests -q
+
+dry:
+	$(PY) live_feed.py --dry-run --order-size $(PAPER_ORDER_SIZE)
 
 preflight:
 	. deploy/load_env.sh; \

@@ -31,6 +31,15 @@ from .products import (
     fetch_products,
     resolve_perpetual,
 )
+from .risk import (
+    ExitReason,
+    ExitSignal,
+    Position,
+    RiskDecision,
+    RiskLimits,
+    RiskManager,
+    RiskState,
+)
 from .sizing import (
     DELTA_PERP_RULES,
     OKX_SWAP_RULES,
@@ -50,6 +59,14 @@ __all__ = [
     "SizingError",
     "contracts_for_base",
     "rebalance",
+    # risk
+    "RiskLimits",
+    "RiskDecision",
+    "Position",
+    "RiskManager",
+    "RiskState",
+    "ExitSignal",
+    "ExitReason",
     # products
     "ResolvedProduct",
     "ProductResolutionError",

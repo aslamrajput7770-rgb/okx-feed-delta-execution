@@ -10,7 +10,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (166 tests), and then runs the read-only
+dependencies, runs the offline suite (181 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
@@ -104,12 +104,25 @@ Orders are off unless asked for, and go to testnet unless asked twice.
 export DELTA_API_KEY=...        # testnet keys first
 export DELTA_API_SECRET=...
 
-python3 live_feed.py --execute --order-size 0.001    # testnet order
-python3 live_feed.py --execute --order-size 0.001 --live   # mainnet
+python3 live_feed.py --dry-run                          # offline, synthetic tape
+python3 live_feed.py --execute --order-size 0.001       # testnet order
+python3 live_feed.py --execute --order-size 0.001 --live --i-know-this-is-live
 ```
 
 `--live` and `--execute` are separate on purpose: both must be present before a
-mainnet order can leave the process.
+mainnet order can leave the process, and a third flag confirms it. The
+confirmation lives in the program rather than only in `run_live.sh`, because a
+shell script cannot be the only thing standing between a typo and a real order.
+
+A live run also needs `--minutes > 0`. An unbounded socket never returns, so the
+old default of `0` made a bare `python3 live_feed.py` hang forever. Use
+`--dry-run` for an offline check: it replays a synthetic tape and opens no
+socket at all.
+
+`--basis-warn` refuses to place an order when the OKX/Delta basis exceeds the
+given percentage, and refuses on a live order when the basis cannot be read. The
+two venues are different instruments, so the spread between them is a real risk
+that no delta signal accounts for.
 
 ## Two things that were silent failures upstream
 
@@ -220,6 +233,7 @@ Output:
     bars=11 volume=17288.7 cum_delta=5119.94
     execution leg: id 27 BTCUSD tick 0.5 1 contract = 0.001 base
     signal       : cumulative delta 5119.94 -> buy
+    basis        : OKX 81867.1 vs Delta 81859.7 = -0.009%
     order size   : DELTA:BTCUSD 1 contracts = 0.001 base
     dry run      : would send buy 1 contract(s) of product_id=27. No request sent.
 
