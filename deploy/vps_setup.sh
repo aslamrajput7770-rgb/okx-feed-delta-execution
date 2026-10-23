@@ -9,10 +9,10 @@
 #
 # Run as root, from a checkout of this repo:
 #
-#   sudo DELTA_API_KEY=... DELTA_API_SECRET=... ./deploy/vps_setup.sh
+#   sudo ./deploy/vps_setup.sh
 #
-# The credentials are written to /etc/okx-feed-delta/env with mode 0600 and are
-# never committed. Nothing here places an order.
+# It prompts for the credentials and writes them to /etc/okx-feed-delta/env
+# with mode 0600; they are never committed. Nothing here places an order.
 
 set -u
 
@@ -48,17 +48,28 @@ if command -v chronyc >/dev/null 2>&1; then
 fi
 
 say "4/6 credentials"
+# Read the values from the terminal rather than from the command line. A
+# credential passed as `sudo DELTA_API_KEY=... ./vps_setup.sh` lands in the
+# invoking shell's history and in /proc/<pid>/environ, both of which outlive
+# the run. Reading from stdin keeps it out of both.
+install -d -m 0700 "$ENV_DIR"
+umask 077
 if [[ -n "${DELTA_API_KEY:-}" && -n "${DELTA_API_SECRET:-}" ]]; then
-  install -d -m 0700 "$ENV_DIR"
-  umask 077
+  echo "  using DELTA_API_KEY / DELTA_API_SECRET from the environment."
+else
+  printf '  Delta API key:    '; read -rs DELTA_API_KEY; printf '\n'
+  printf '  Delta API secret: '; read -rs DELTA_API_SECRET; printf '\n'
+fi
+if [[ -n "${DELTA_API_KEY:-}" && -n "${DELTA_API_SECRET:-}" ]]; then
   {
     printf 'DELTA_API_KEY=%s\n' "$DELTA_API_KEY"
     printf 'DELTA_API_SECRET=%s\n' "$DELTA_API_SECRET"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
+  unset DELTA_API_KEY DELTA_API_SECRET
   echo "  wrote ${ENV_FILE} (mode 600)"
 else
-  echo "  DELTA_API_KEY / DELTA_API_SECRET not supplied; skipping."
+  echo "  no credentials supplied; skipping."
   echo "  Create the file yourself before running the preflight:"
   echo "    install -d -m 0700 ${ENV_DIR}"
   echo "    printf 'DELTA_API_KEY=%s\\nDELTA_API_SECRET=%s\\n' KEY SECRET > ${ENV_FILE}"
