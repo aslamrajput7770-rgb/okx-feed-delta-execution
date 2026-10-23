@@ -161,6 +161,11 @@ python3 diagnose_okx.py c.txt                   # side-mapping verdict
 python3 live_feed.py --replay c.txt             # offline replay
 ```
 
+CI (`.github/workflows/ci.yml`) runs the suite on 3.10/3.12/3.13 and runs the
+installer end to end on a clean runner, including a paper session as the service
+user. Reading the installer would not have caught either install defect; running
+it did. If you change `deploy/`, that job is the one to watch.
+
 ## As a service
 
 `deploy/aws_setup.sh` installs the project as a systemd unit on an EC2 instance.
