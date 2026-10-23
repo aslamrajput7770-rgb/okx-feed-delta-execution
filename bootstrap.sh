@@ -50,6 +50,15 @@ say "interpreter: $py ($("$py" --version 2>&1))"
 
 # ------------------------------------------------------------------------ venv
 say "virtualenv and dependencies"
+# `make` is only needed for the Makefile wrappers, but installing it here keeps
+# `make help` working on a fresh host instead of failing with command not found.
+if ! command -v make >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y -q make >/dev/null 2>&1 || true
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y -qq make >/dev/null 2>&1 || true
+    fi
+fi
 [[ -d .venv ]] || "$py" -m venv .venv
 ./.venv/bin/pip install -q --upgrade pip
 ./.venv/bin/pip install -q -r requirements.txt
