@@ -1,16 +1,40 @@
 # Backtest results
 
-Real OKX trade prints, the shipped signal loop, simulated fills. The harness
-imports `live_feed` and drives the production `Supervisor`; nothing about the
-strategy is re-implemented for the backtest. See `tools/backtest.py`.
+Real trade prints, the shipped signal loop, simulated fills. The harness imports
+`live_feed` and drives the production `Supervisor`; nothing about the strategy is
+re-implemented for the backtest. See `tools/backtest.py`.
+
+The signal venue is now **Delta India** by default, the same venue the order goes
+to, so the signal price and the fill price are the same price and the basis is
+zero by construction. The results below were measured on **OKX** tapes, in the
+cross-venue mode, before the default changed. They are kept because the
+conclusion did not depend on the venue: the signal lost money on OKX prints, and
+the reason it lost money - a raw sign test on cumulative delta - is a property of
+the rule, not of the book it reads. A Delta tape is recording now and the numbers
+here will be replaced by a same-venue run once it is a full day long.
 
 ## How the data was obtained
 
-`tools/fetch_okx.py` pages OKX's public `history-trades` endpoint. The one thing
-worth knowing: `after` takes a **tradeId**, not a timestamp. Passing a timestamp
-is silently ignored and returns the newest page every time, which looks like it
-works. Paging on the tradeId walks backwards correctly, and a binary search over
-the id space reaches a chosen date - 7 days back was verified.
+**OKX tapes (the numbers below).** `tools/fetch_okx.py` pages OKX's public
+`history-trades` endpoint. The one thing worth knowing: `after` takes a
+**tradeId**, not a timestamp. Passing a timestamp is silently ignored and returns
+the newest page every time, which looks like it works. Paging on the tradeId
+walks backwards correctly, and a search that doubles to bracket the target and
+then bisects reaches a chosen date - 7 days back was verified.
+
+An earlier version of that search inverted its two cases and returned a tradeId
+*below* the window, so the walk descended away from the data and found zero
+prints - after crawling the id space one step at a time for over an hour. The
+bounds are now bracketed first, which is about 30 requests, and
+`tests/test_fetch_okx.py` pins the invariant that was violated.
+
+**Delta tapes.** Delta keeps no trade-print history at all. Its REST `trades`
+endpoint returns the latest 50 prints and ignores `start` and `end` (tried in
+seconds and in microseconds); its only historical endpoint is candles, which
+carry no aggressor split and so cannot rebuild the signal; and the venue docs
+scope cursor pagination to products, orders and fills. So a Delta tape has to be
+**recorded while it happens** - `tools/capture.py`, or `make tape` - and every
+backtest is limited to windows the process was running for.
 
 Tapes used, all fetched 2026-10-23:
 

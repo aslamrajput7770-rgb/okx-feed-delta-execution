@@ -148,7 +148,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 275 tests, offline, ~1.0s
+python3 -m pytest tests -q                      # 343 tests, offline, ~1.3s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 python3 telegram_check.py                       # bot can reach the chat, sends one message
@@ -156,8 +156,9 @@ python3 telegram_check.py                       # bot can reach the chat, sends 
 ./deploy/run_paper_telegram.sh 5                # 5 min, NO orders, signals to Telegram
 DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5   # real orders, needs the size
 python3 live_feed.py --dry-run                  # offline synthetic tape, no socket
-python3 live_feed.py --minutes 1 --record c.txt # live OKX feed, no orders
-python3 diagnose_okx.py c.txt                   # side-mapping verdict
+python3 live_feed.py --minutes 1 --record c.txt # live Delta feed, no orders
+python3 live_feed.py --venue okx --minutes 1    # cross-venue mode (OKX signal)
+python3 diagnose_okx.py c.txt                   # OKX side-mapping verdict
 python3 live_feed.py --replay c.txt             # offline replay
 ```
 
@@ -168,21 +169,37 @@ it did. If you change `deploy/`, that job is the one to watch.
 
 ### Backtesting
 
-`tools/fetch_okx.py` pulls real OKX trade prints into a replay tape;
-`tools/backtest.py` runs the shipped signal loop over that tape. The backtest
+`tools/backtest.py` runs the shipped signal loop over a recorded tape. It
 imports `live_feed` and drives the real `Supervisor`, so it measures the rules
 that run in production rather than a copy of them.
 
+**A Delta tape has to be recorded live.** Delta keeps no trade-print history:
+its REST `trades` endpoint returns the latest 50 prints and ignores `start` and
+`end` (tried in both seconds and microseconds), its only historical endpoint is
+candles, and candles carry no aggressor split so the signal cannot be rebuilt
+from them. The docs scope cursor pagination to products, orders and fills. OKX
+does have pageable history, and `tools/fetch_okx.py` uses it - but that is the
+cross-venue mode now.
+
 ```bash
-python3 tools/fetch_okx.py --hours 6 --out tape_6h.txt     # real prints
-python3 tools/fetch_okx.py --days 7 --out tape_7d.txt      # binary-searches back
-python3 tools/backtest.py --tape tape_6h.txt               # shipped rules
-python3 tools/backtest.py --tape tape_6h.txt --grid-stop 0.25:3.0:0.25
-python3 tools/backtest.py --tape tape_6h.txt --verify-delta  # slow, self-checks
+make tape                                       # 1440 min = 1 day, Delta, live
+python3 tools/capture.py --venue delta --minutes 1440 --out tape.txt
+python3 tools/backtest.py --tape tape.txt                    # shipped rules
+python3 tools/backtest.py --tape tape.txt --grid-stop 0.25:3.0:0.25
+python3 tools/backtest.py --tape tape.txt --verify-delta     # slow, self-checks
+python3 tools/backtest.py --tape tape.txt --venue okx        # OKX-recorded tape
+python3 tools/fetch_okx.py --hours 6 --out tape_okx.txt      # OKX history
 ```
+
+`--venue` selects the decoder and must match the tape. A Delta tape fed to the
+OKX decoder decodes to zero prints rather than to garbage, and the tests pin
+that, because a silent zero is the failure mode to catch.
 
 Fills are simulated at the print price plus cost; the strategy, risk ladder and
 exit logic are the shipped code paths. See `docs/backtest.md` for the results.
+
+Note that with `--venue delta` the basis is zero by construction: the signal
+price and the fill price are the same price. That is the point of the default.
 
 ## As a service
 
@@ -394,9 +411,10 @@ usable for the preflight without Trading.
 
 ## Known gaps
 
-**No hedging leg.** OKX is a signal source only; nothing is traded there. The
-position is directional and carries basis risk. The docs and the README say so
-and should keep saying so.
+**No hedging leg.** Nothing is traded on the signal venue. In the default
+`--venue delta` mode there is no basis to carry, because the signal and the fill
+are the same book. In `--venue okx` mode the position is directional and carries
+basis risk, and the docs and the README say so.
 
 **No persistence.** Sessions are in memory. A restart loses the day's profile.
 
@@ -445,16 +463,24 @@ after a stop loss fires, so the next tick re-enters. A run can therefore walk
 into the same loss repeatedly until the daily budget halts it. The daily loss
 limit is what stops this, not the strategy.
 
-**Reported PnL is measured at the OKX price, not at a Delta fill.** The exit
-price is the last OKX trade price, and no fill, fee or slippage from the
-execution venue enters the number. It is the price the signal was computed from,
-not the price the position would have been closed at, so `realized pnl` is an
-upper bound at best. Reading the real fill requires a position query this
-repository does not make.
+**Reported PnL is measured at the signal price, not at a Delta fill.** The exit
+price is the last trade price on the signal venue, and no fill, fee or slippage
+from the execution venue enters the number. It is the price the signal was
+computed from, not the price the position would have been closed at, so
+`realized pnl` is an upper bound at best. Reading the real fill requires a
+position query this repository does not make. With `--venue delta` the two
+prices are at least from the same book.
 
-**No backtest, and no evidence the signal has an edge.** Nothing here measures
-whether the strategy makes money. The tests measure the plumbing. Treat any
-profitability claim about this repository as unverified until a backtest exists.
+**The signal has no demonstrated edge.** A backtest exists now
+(`tools/backtest.py`), it runs the shipped rules, and on every tape measured it
+loses money - before fees as well as after. See `docs/backtest.md`. The tests
+measure the plumbing, which works; they say nothing about profitability. Treat
+any profitability claim about this repository as unverified until a run of the
+backtest on a full day of Delta prints says otherwise.
+
+**A Delta tape is a recording, not a download.** Because Delta keeps no
+trade-print history, every backtest is limited to windows that were captured
+while the process was running. There is no way to go back and fill a gap.
 
 ## Things not to do
 

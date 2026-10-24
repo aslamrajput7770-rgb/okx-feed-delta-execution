@@ -1,7 +1,10 @@
-# OKX feed -> Delta Exchange India execution
+# Trade-print feed -> Delta Exchange India execution
 
-Order-flow analytics driven by **OKX perpetual trade flow**, with orders placed
-on **Delta Exchange India**.
+Order-flow analytics driven by **perpetual trade flow**, with orders placed on
+**Delta Exchange India**. The signal is read from Delta by default - the same
+venue the order lands on - so the signal price and the fill price are the same
+price. OKX can be selected as the signal source instead, which is the
+cross-venue mode described below.
 
 ## Quickstart
 
@@ -45,8 +48,16 @@ assumed, and the known gaps. Read it before changing anything.
 
 ## Read this first
 
-**This is not arbitrage.** OKX is the *signal* venue, Delta India is the
-*execution* venue. They are two different contracts:
+**The default is single-venue: signal and execution both on Delta India.** The
+order always goes to Delta; `--venue delta` (the default) also reads the signal
+there. Signal price and fill price are then the same price, so there is no basis
+to pay and a backtest measures the strategy rather than the spread. The cost is
+resolution: Delta publishes tens of prints a minute where OKX publishes
+hundreds, so the footprint is coarser.
+
+**`--venue okx` is the cross-venue mode, and that one is not arbitrage.** OKX
+becomes the *signal* venue while Delta India stays the *execution* venue. They
+are two different contracts:
 
 | | OKX `BTC-USDT-SWAP` | Delta India `BTCUSD` |
 |---|---|---|
@@ -115,27 +126,39 @@ orderflow/
   instruments.py     # OKX and Delta contract specs, cross-venue conversion
   session.py         # 24/7 crypto calendar, resets at 00:00 UTC
   session_chart.py   # daily reset for cumulative delta and the profile
-  feed/okx.py        # JSON WebSocket ingestion, taker side, dedup on tradeId
+  feed/base.py       # transport, dedup, reconnect, the run loop (both venues)
+  feed/delta.py      # Delta India ingestion, buyer role -> aggressor side
+  feed/okx.py        # OKX ingestion, taker side
   execution/sizing.py       # contract arithmetic between the two venues
   execution/delta_client.py # signed REST orders, dry-run and testnet default
+tools/capture.py   # record live prints to a backtest tape
+tools/backtest.py  # replay a tape through the shipped rules
+tools/fetch_okx.py # page OKX history into a tape (cross-venue mode)
 live_feed.py       # live runner
-diagnose_okx.py    # verdict on a recorded capture
+diagnose_okx.py    # verdict on a recorded OKX capture
 ```
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-python3 -m pytest tests -q          # 143 tests, no network
+python3 -m pytest tests -q          # 343 tests, no network
 
-# Live OKX market data, no orders, no credentials needed
+# Live Delta market data, no orders, no credentials needed
 python3 live_feed.py --minutes 1 --record capture.txt
-
-# Check the recording: confirms the side mapping is not inverted
-python3 diagnose_okx.py capture.txt
 
 # Replay offline
 python3 live_feed.py --replay capture.txt
+
+# Read the signal from OKX instead (cross-venue mode)
+python3 live_feed.py --venue okx --minutes 1 --record capture.txt
+
+# Check an OKX recording: confirms the side mapping is not inverted
+python3 diagnose_okx.py capture.txt
+
+# Backtest: record a day, then replay it through the shipped rules
+make tape                           # 1440 minutes, live, no orders
+python3 tools/backtest.py --tape tape.txt
 ```
 
 ## Trading
