@@ -30,12 +30,15 @@ owner, and do not paste a private key into a chat.
 
 Read this before assuming anything about what is finished.
 
-**Done and on `main`.** Telegram signal delivery (`orderflow/notify/`); the feed
-runs in a single pass (it used to run twice, and the second pass - the one that
-trades - saw nothing); a dropped socket reconnects instead of raising out of
-`run()`; SIGTERM is handled like Ctrl-C, so `systemctl stop` closes the position
-and saves the daily counter. `deploy/aws_setup.sh` installs the project as a
-systemd unit, and the unit file is in the repository. 343 tests pass.
+**Done and on `main`.** Telegram signal delivery (`orderflow/notify/`), with the
+venue name carried through so a notice says which book the signal came from; the
+feed runs in a single pass (it used to run twice, and the second pass - the one
+that trades - saw nothing); a dropped socket reconnects instead of raising out
+of `run()`; SIGTERM is handled like Ctrl-C, so `systemctl stop` closes the
+position and saves the daily counter. Delta India is the signal source by default
+and OKX is the opt-in cross-venue mode. `deploy/aws_setup.sh` installs the
+project as a systemd unit, and the unit file is in the repository. 351 tests
+pass.
 
 **Verified, not assumed.** The Delta feed is genuinely live: a one-minute run
 against `wss://public-socket.india.delta.exchange` delivered 52 trades and 30
@@ -50,21 +53,28 @@ notifications a live run would, minus the request.
 
 1. **The installer has been run, but not on the target host.** `deploy/aws_setup.sh`
    has now been executed end to end on a clean Debian container: it created the
-   service user, installed the code, ran the suite as that user (275 passed),
+   service user, installed the code, ran the suite as that user (351 passed),
    proved `state/` is writable by it, wrote both env files and installed the
    unit. That run is what found the two defects described below. What has *not*
    happened is an install on the actual EC2 instance, and no systemd unit has
    ever been started by systemd - this container has no init. Expect the unit
    install and `systemctl start` to be the first genuinely new step there.
-2. **The Delta credentials must be rotated.** They are committed in
+2. **The Delta tape is recording and is not yet a day long.** Delta keeps no
+   trade-print history, so the 1-day backtest is a live 24-hour capture
+   (`tools/capture.py`, or `make tape`) that has to finish before the same-venue
+   numbers are real. The backtest prints a PARTIAL banner while it is short, and
+   marks `partial` in its JSON, so an interim read cannot be mistaken for a day.
+   Until then `docs/backtest.md` carries OKX cross-venue numbers with that said
+   plainly.
+3. **The Delta credentials must be rotated.** They are committed in
    `config/delta.env` at the owner's explicit instruction. Do not undo that, but
    do tell the owner to rotate the key and the secret; a committed credential is
    a credential that has to be considered public.
-3. **Nothing here shows the strategy makes money.** A backtest now exists
+4. **Nothing here shows the strategy makes money.** A backtest now exists
    (`tools/backtest.py`) and it loses money on every tape measured, before fees
    as well as after; see `docs/backtest.md`. `realized pnl` is measured at the
    signal price, not at a Delta fill, so it is an upper bound at best.
-4. **There is no cooldown after an exit.** The signal is still positive after a
+5. **There is no cooldown after an exit.** The signal is still positive after a
    stop loss fires, so the next tick re-enters; a run can walk into the same loss
    until the daily budget halts it. This is a strategy gap, not a safety one, and
    it is the most likely next piece of real work.
