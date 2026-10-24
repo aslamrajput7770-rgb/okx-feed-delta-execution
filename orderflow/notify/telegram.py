@@ -245,7 +245,7 @@ def format_signal(
     session_volume: float | None = None,
     bars: int | None = None,
     basis_pct: float | None = None,
-    venue: str = "OKX BTC-USDT-SWAP",
+    venue: str = "DELTA BTCUSD",
     execution: str = "Delta India BTCUSD",
     mode: str = "paper",
     extra: str | None = None,
@@ -291,6 +291,7 @@ def format_entry(
     cumulative_delta: float | None = None,
     mode: str = "paper",
     product: str = "Delta India BTCUSD",
+    venue: str = "DELTA BTCUSD",
 ) -> str:
     """A position was opened (or would have been, in paper mode)."""
     verb = "ENTRY" if mode != "paper" else "ENTRY (paper)"
@@ -300,6 +301,7 @@ def format_entry(
         cumulative_delta=cumulative_delta,
         execution=product,
         mode=mode,
+        venue=venue,
         extra=(
             f"<b>{verb}</b>\n"
             f"size      {size_base:g} BTC\n"
@@ -317,6 +319,7 @@ def format_exit(
     pnl_quote: float | None,
     held_seconds: float | None = None,
     mode: str = "paper",
+    venue: str = "DELTA BTCUSD",
 ) -> str:
     """A position was closed (or would have been, in paper mode)."""
     verb = "EXIT" if mode != "paper" else "EXIT (paper)"
@@ -336,7 +339,7 @@ def format_exit(
     ]
     if held_seconds is not None:
         lines.append(f"<b>held</b>    {held_seconds:,.0f}s")
-    lines += ["", f"<i>mode</i>    {mode}"]
+    lines += ["", f"<i>venue</i>   {venue}", f"<i>mode</i>    {mode}"]
     return "\n".join(lines)
 
 

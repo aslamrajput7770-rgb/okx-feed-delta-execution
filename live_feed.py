@@ -383,6 +383,7 @@ class Supervisor:
                 cumulative_delta=cumulative_delta,
                 mode=self.notify_mode,
                 product=f"Delta India id {self.product_id}",
+                venue=self.venue,
             )
         )
 
@@ -420,6 +421,7 @@ class Supervisor:
                 pnl_quote=p.pnl_quote(price),
                 held_seconds=p.held_seconds(self._last_ts if self._last_ts else p.entry_ts),
                 mode=self.notify_mode,
+                venue=self.venue,
             )
         )
 

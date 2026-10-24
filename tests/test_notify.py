@@ -271,3 +271,33 @@ class TestFormatting:
     def test_run_summary_flags_a_halt(self):
         text = format_run_summary(entries=1, exits=1, realized_quote=-50.0, halted=True)
         assert "HALTED" in text
+
+
+class TestTheMessageNamesTheVenue:
+    """The notice must say which book the signal came from.
+
+    Delta is the default and OKX is opt-in, so a message that always says OKX is
+    wrong most of the time - and it is the field a reader uses to decide whether
+    a fill and a signal are the same instrument.
+    """
+
+    def test_signal_defaults_to_delta(self):
+        text = format_signal(side="buy", price=80_000.0, cumulative_delta=12.0)
+        assert "DELTA BTCUSD" in text
+        assert "OKX" not in text
+
+    def test_signal_can_name_okx(self):
+        text = format_signal(side="buy", price=80_000.0, cumulative_delta=12.0,
+                             venue="OKX BTC-USDT-SWAP")
+        assert "OKX BTC-USDT-SWAP" in text
+
+    def test_entry_carries_the_venue_through(self):
+        text = format_entry(side="buy", price=80_000.0, size_base=0.001, contracts=1,
+                            cumulative_delta=12.0, venue="OKX BTC-USDT-SWAP")
+        assert "OKX BTC-USDT-SWAP" in text
+
+    def test_exit_carries_the_venue_through(self):
+        text = format_exit(side="buy", price=80_000.0, entry_price=79_000.0,
+                           reason="take_profit", pnl_quote=1.0,
+                           venue="OKX BTC-USDT-SWAP")
+        assert "OKX BTC-USDT-SWAP" in text

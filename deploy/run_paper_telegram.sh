@@ -39,4 +39,4 @@ fi
 exec "$repo/.venv/bin/python" "$repo/live_feed.py" \
     --live --minutes "$minutes" --bar-seconds 30 \
     --order-size "${PAPER_ORDER_SIZE:-0.001}" \
-    --telegram "$@"
+    --telegram --venue "${SIGNAL_VENUE:-delta}" "$@"
