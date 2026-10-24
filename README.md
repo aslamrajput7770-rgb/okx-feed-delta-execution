@@ -13,7 +13,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (343 tests), and then runs the read-only
+dependencies, runs the offline suite (353 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
@@ -142,7 +142,7 @@ diagnose_okx.py    # verdict on a recorded OKX capture
 
 ```bash
 pip install -r requirements.txt
-python3 -m pytest tests -q          # 343 tests, no network
+python3 -m pytest tests -q          # 353 tests, no network
 
 # Live Delta market data, no orders, no credentials needed
 python3 live_feed.py --minutes 1 --record capture.txt

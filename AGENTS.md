@@ -37,7 +37,7 @@ that trades - saw nothing); a dropped socket reconnects instead of raising out
 of `run()`; SIGTERM is handled like Ctrl-C, so `systemctl stop` closes the
 position and saves the daily counter. Delta India is the signal source by default
 and OKX is the opt-in cross-venue mode. `deploy/aws_setup.sh` installs the
-project as a systemd unit, and the unit file is in the repository. 351 tests
+project as a systemd unit, and the unit file is in the repository. 353 tests
 pass.
 
 **Verified, not assumed.** The Delta feed is genuinely live: a one-minute run
@@ -53,7 +53,7 @@ notifications a live run would, minus the request.
 
 1. **The installer has been run, but not on the target host.** `deploy/aws_setup.sh`
    has now been executed end to end on a clean Debian container: it created the
-   service user, installed the code, ran the suite as that user (351 passed),
+   service user, installed the code, ran the suite as that user (353 passed),
    proved `state/` is writable by it, wrote both env files and installed the
    unit. That run is what found the two defects described below. What has *not*
    happened is an install on the actual EC2 instance, and no systemd unit has
@@ -164,7 +164,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 343 tests, offline, ~1.3s
+python3 -m pytest tests -q                      # 353 tests, offline, ~1.3s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 python3 telegram_check.py                       # bot can reach the chat, sends one message
