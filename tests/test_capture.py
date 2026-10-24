@@ -33,7 +33,7 @@ class TestOneWriterPerTape:
         holder = lock.open("w")
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            rc = capture.main(["--venue", "delta", "--minutes", "0.01",
+            rc = capture.main(["--minutes", "0.01",
                                "--out", str(tape)])
         finally:
             fcntl.flock(holder, fcntl.LOCK_UN)
@@ -104,6 +104,6 @@ class TestTheTapeSpanIsMeasuredNotCounted:
         """No socket is opened on this path, which is why it is testable."""
         p = self._tape(tmp_path / "t.txt", 1_792_805_400_000_000,
                        [0, 7_200_000_000])  # 2 h
-        rc = capture.main(["--venue", "delta", "--minutes", "60", "--out", str(p)])
+        rc = capture.main(["--minutes", "60", "--out", str(p)])
         assert rc == 0
         assert "nothing to record" in capsys.readouterr().out

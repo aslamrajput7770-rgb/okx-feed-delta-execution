@@ -77,29 +77,6 @@ class TestTapeDecoding:
         assert events[0].price == 100.0
         assert events[0].side is Side.BUY
 
-    def test_the_venue_selects_the_decoder(self, tmp_path):
-        """A Delta tape through the OKX decoder yields nothing, not garbage.
-
-        The two decoders key on different fields, so the choice is not
-        cosmetic - and a silent zero-print result is the failure to catch.
-        """
-        delta_tape = write_tape(tmp_path / "d.txt", [row(1, 100.0, 1.0, "buy", 1000)])
-        assert len(backtest.load_tape(delta_tape, "delta")) == 1
-        assert len(backtest.load_tape(delta_tape, "okx")) == 0
-
-    def test_an_okx_tape_still_decodes_under_the_okx_venue(self, tmp_path):
-        """The cross-venue mode must keep working after the venue split."""
-        okx = "txt:" + json.dumps({
-            "arg": {"channel": "trades", "instId": "BTC-USDT-SWAP"},
-            "data": [{"instId": "BTC-USDT-SWAP", "tradeId": "7", "px": "100.0",
-                      "sz": "1.0", "side": "buy", "ts": "1000"}],
-        })
-        p = tmp_path / "o.txt"
-        p.write_text(okx + "\n", encoding="utf-8")
-        events = backtest.load_tape(p, "okx")
-        assert len(events) == 1
-        assert events[0].trade_id == "7"
-
     def test_duplicate_trade_ids_are_dropped(self, tmp_path):
         """A reconnect replays prints; a backtest must not double-count them."""
         rows = [row(1, 100.0, 1.0, "buy", 1000), row(1, 100.0, 1.0, "buy", 1000)]
@@ -129,8 +106,7 @@ class TestTheLoopIsTheShippedLoop:
     def test_the_supervisor_under_test_is_live_feeds(self):
         """Import identity: a refactor of live_feed must move the backtest too."""
         assert backtest.live_feed.Supervisor is live_feed.Supervisor
-        assert backtest.live_feed.basis_pct is live_feed.basis_pct
-
+        
     def test_the_broker_answers_the_calls_the_supervisor_makes(self):
         broker = backtest.SimBroker(backtest.Costs(), 27)
         broker.price = 50_000.0
@@ -155,22 +131,17 @@ class TestFillModel:
 
     def test_costs_are_charged_on_both_legs(self):
         costs = backtest.Costs(fee_bps=10.0, slippage_bps=0.0)
-        entry = backtest._notional_cost(100_000.0, 0.001, costs, entry=True, basis_mode=False)
-        exit_ = backtest._notional_cost(100_000.0, 0.001, costs, entry=False, basis_mode=False)
+        entry = backtest._notional_cost(100_000.0, 0.001, costs, entry=True)
+        exit_ = backtest._notional_cost(100_000.0, 0.001, costs, entry=False)
         # notional = 100_000 * 0.001 = 100 quote; 10 bps of it is 0.1.
         assert entry == pytest.approx(0.1)
         assert exit_ == pytest.approx(0.1)
 
-    def test_basis_is_charged_on_entry_only(self):
-        costs = backtest.Costs(fee_bps=0.0, slippage_bps=0.0, basis_bps=50.0)
-        entry = backtest._notional_cost(100_000.0, 0.001, costs, entry=True, basis_mode=True)
-        exit_ = backtest._notional_cost(100_000.0, 0.001, costs, entry=False, basis_mode=True)
-        assert entry == pytest.approx(0.5)
-        assert exit_ == pytest.approx(0.0)
-
-    def test_basis_is_off_when_basis_mode_is_off(self):
-        costs = backtest.Costs(fee_bps=0.0, slippage_bps=0.0, basis_bps=50.0)
-        assert backtest._notional_cost(100_000.0, 0.001, costs, entry=True, basis_mode=False) == 0.0
+    def test_a_zero_cost_run_charges_nothing(self):
+        """Delta reads the tape it trades, so there is no basis leg to charge."""
+        costs = backtest.Costs(fee_bps=0.0, slippage_bps=0.0)
+        assert backtest._notional_cost(100_000.0, 0.001, costs, entry=True) == 0.0
+        assert backtest._notional_cost(100_000.0, 0.001, costs, entry=False) == 0.0
 
 
 class TestTheRunUsesTheRiskLadder:
@@ -191,7 +162,7 @@ class TestTheRunUsesTheRiskLadder:
         rows += [row(3, 90.0, 1.0, "sell", 3000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=1.0, take_profit_pct=0.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert len(r.trades) == 1
         assert r.trades[0].side == "buy"
         assert r.trades[0].reason == "stop_loss"
@@ -202,7 +173,7 @@ class TestTheRunUsesTheRiskLadder:
         rows += [row(3, 110.0, 1.0, "sell", 3000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=0.0, take_profit_pct=2.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert len(r.trades) == 1
         assert r.trades[0].reason == "take_profit"
         assert r.trades[0].pnl_quote > 0
@@ -211,7 +182,7 @@ class TestTheRunUsesTheRiskLadder:
         rows = [row(1, 100.0, 5.0, "buy", 1000), row(2, 100.5, 1.0, "buy", 2000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=0.0, take_profit_pct=0.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert len(r.trades) == 1
         assert r.trades[0].reason == "end_of_run"
 
@@ -221,7 +192,7 @@ class TestTheRunUsesTheRiskLadder:
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(max_position_base=0.0001, stop_loss_pct=0.0,
                             take_profit_pct=0.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert len(r.trades) == 0
 
 
@@ -285,8 +256,7 @@ class TestRunningDeltaMatchesTheChart:
                 for i in range(40)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         r = backtest.run_backtest(
-            events, RiskLimits(), 0.001, backtest.Costs(),
-            basis_mode=False, use_gate=False, verbose=True,
+            events, RiskLimits(), 0.001, backtest.Costs(), verbose=True,
         )
         assert r.delta_mismatches == 0
 
@@ -297,7 +267,7 @@ class TestReportedNumbers:
                 row(3, 110.0, 1.0, "sell", 3000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=0.0, take_profit_pct=2.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert r.net_pnl == pytest.approx(r.gross_pnl - r.costs)
         assert r.costs > 0
 
@@ -306,7 +276,7 @@ class TestReportedNumbers:
                 row(3, 110.0, 1.0, "sell", 3000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=0.0, take_profit_pct=2.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         curve = r.equity_curve()
         assert curve and curve[-1] == pytest.approx(r.net_pnl)
 
@@ -315,7 +285,7 @@ class TestReportedNumbers:
                 row(3, 90.0, 1.0, "sell", 3000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
         limits = RiskLimits(stop_loss_pct=1.0, take_profit_pct=0.0, max_hold_seconds=0.0)
-        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs(), basis_mode=False, use_gate=False)
+        r = backtest.run_backtest(events, limits, 0.001, backtest.Costs())
         assert r.max_drawdown() <= 0.0
 
     def test_a_backtest_writes_no_risk_state(self, tmp_path, monkeypatch):
@@ -323,8 +293,7 @@ class TestReportedNumbers:
         monkeypatch.chdir(tmp_path)
         rows = [row(1, 100.0, 5.0, "buy", 1000), row(2, 100.5, 1.0, "buy", 2000)]
         events = backtest.load_tape(tape_with(tmp_path, rows))
-        backtest.run_backtest(events, RiskLimits(), 0.001, backtest.Costs(),
-                              basis_mode=False, use_gate=False)
+        backtest.run_backtest(events, RiskLimits(), 0.001, backtest.Costs())
         assert not (tmp_path / "state").exists()
 
 

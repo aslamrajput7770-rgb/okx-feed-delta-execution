@@ -18,26 +18,17 @@ from live_feed import DRY_RUN_TRADES, dry_run_frames, main, order_side
 class TestTheSignalVenue:
     """Delta is the default, and the choice must actually reach the wiring."""
 
-    def test_delta_is_the_default(self):
-        """The venue orders go to is the venue the signal should come from."""
-        symbol, instrument, ws, feed_cls = live_feed.VENUE_INSTRUMENTS["delta"]
-        assert symbol == "BTCUSD"
-        assert instrument is live_feed.DELTA_BTCUSD
-        assert "public-socket" in ws
+    def test_the_signal_is_delta(self):
+        """The venue orders go to is the venue the signal comes from."""
+        assert live_feed.SIGNAL_SYMBOL == "BTCUSD"
+        assert live_feed.SIGNAL_INSTRUMENT is live_feed.DELTA_BTCUSD
+        assert "public-socket" in live_feed.SIGNAL_WS
+        assert live_feed.SIGNAL_FEED is live_feed.DeltaTradeFeed
 
-    def test_both_venues_are_available(self):
-        assert set(live_feed.VENUE_INSTRUMENTS) == {"delta", "okx"}
-
-    def test_an_unknown_venue_is_refused(self):
+    def test_there_is_no_venue_switch(self):
+        """One source, so there is no second book to select or to reconcile."""
         with pytest.raises(SystemExit):
-            main(["--dry-run", "--venue", "binance"])
-
-    def test_the_okx_mode_is_still_reachable(self, capsys):
-        """Cross-venue mode is kept, not deleted."""
-        rc = main(["--dry-run", "--venue", "okx", "--order-size", "0.001"])
-        out = capsys.readouterr().out
-        assert rc == 0
-        assert "would trade" in out
+            main(["--dry-run", "--venue", "okx"])  # removed on purpose
 
     def test_the_delta_dry_run_decodes_to_trades(self, capsys):
         """A dry run in the wrong frame shape reports a healthy feed and no
@@ -85,18 +76,17 @@ class TestDryRun:
         assert roles == {"t", "m"}
 
     def test_the_dry_run_tape_decodes_with_the_venue_it_claims(self):
-        """The synthetic frames must be readable by that venue's own decoder.
+        """The synthetic frames must be readable by the real decoder.
 
         A dry run in the wrong frame shape reports a healthy feed and zero
         trades, which is the worst possible output from an offline check.
         """
-        from orderflow.feed import DeltaTradeFeed, OkxTradeFeed
+        from orderflow.feed import DeltaTradeFeed
         from orderflow.feed.base import ReplayTransport
 
-        for venue, inst, cls in (("delta", "BTCUSD", DeltaTradeFeed),
-                                 ("okx", "BTC-USDT-SWAP", OkxTradeFeed)):
-            feed = cls([inst], lambda v=venue, i=inst: ReplayTransport(
-                dry_run_frames(i, n=10, venue=v)))
+        for inst, cls in (("BTCUSD", DeltaTradeFeed),):
+            feed = cls([inst], lambda i=inst: ReplayTransport(
+                dry_run_frames(i, n=10)))
             stats = feed.run(lambda *_: None)
             assert stats.trades == 10, f"{venue} dry-run tape decoded to {stats.trades}"
             assert stats.protocol_errors == 0
@@ -162,14 +152,3 @@ class TestOrderSide:
         assert order_side(0.0) is None
 
 
-# -------------------------------------------------------------------- basis
-class TestBasis:
-    def test_premium_is_positive(self):
-        assert live_feed.basis_pct(100.0, 101.0) == pytest.approx(1.0)
-
-    def test_discount_is_negative(self):
-        assert live_feed.basis_pct(100.0, 99.0) == pytest.approx(-1.0)
-
-    def test_zero_okx_price_is_refused(self):
-        with pytest.raises(ValueError):
-            live_feed.basis_pct(0.0, 100.0)

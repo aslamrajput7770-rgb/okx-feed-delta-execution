@@ -4,29 +4,27 @@ Real trade prints, the shipped signal loop, simulated fills. The harness imports
 `live_feed` and drives the production `Supervisor`; nothing about the strategy is
 re-implemented for the backtest. See `tools/backtest.py`.
 
-The signal venue is now **Delta India** by default, the same venue the order goes
-to, so the signal price and the fill price are the same price and the basis is
-zero by construction. The results below were measured on **OKX** tapes, in the
-cross-venue mode, before the default changed. They are kept because the
-conclusion did not depend on the venue: the signal lost money on OKX prints, and
-the reason it lost money - a raw sign test on cumulative delta - is a property of
-the rule, not of the book it reads. A Delta tape is recording now and the numbers
-here will be replaced by a same-venue run once it is a full day long.
+The signal is read from **Delta India**, the same venue the order goes to, so the
+signal price and the fill price are the same price and there is no basis to
+charge.
+
+The numbers in the tables below were measured on **OKX** tapes, in a cross-venue
+mode that no longer exists. They are kept because the conclusion did not depend
+on the venue: the signal lost money on OKX prints, and the reason it lost money -
+a raw sign test on cumulative delta - is a property of the rule, not of the book
+it reads. But be clear about what that means for reproducing them: the OKX
+fetcher and decoder have been removed from the repository, so **the figures below
+cannot be re-run today.** A Delta capture is the way forward, and the tables will
+be replaced by a same-venue run once one covers a full day.
 
 ## How the data was obtained
 
-**OKX tapes (the numbers below).** `tools/fetch_okx.py` pages OKX's public
-`history-trades` endpoint. The one thing worth knowing: `after` takes a
-**tradeId**, not a timestamp. Passing a timestamp is silently ignored and returns
-the newest page every time, which looks like it works. Paging on the tradeId
-walks backwards correctly, and a search that doubles to bracket the target and
-then bisects reaches a chosen date - 7 days back was verified.
-
-An earlier version of that search inverted its two cases and returned a tradeId
-*below* the window, so the walk descended away from the data and found zero
-prints - after crawling the id space one step at a time for over an hour. The
-bounds are now bracketed first, which is about 30 requests, and
-`tests/test_fetch_okx.py` pins the invariant that was violated.
+**The OKX tapes behind these numbers (no longer reproducible).** They came from
+OKX's public `history-trades` endpoint, paged backwards on a **tradeId**. The
+trap, recorded here because it cost an hour of wall-clock once: `after` takes a
+tradeId, not a timestamp. Passing a timestamp is silently ignored and returns the
+newest page every time, which looks like it works. The fetcher and its tests are
+gone with the rest of the OKX path; this is the note of what it did.
 
 **Delta tapes.** Delta keeps no trade-print history at all. Its REST `trades`
 endpoint returns the latest 50 prints and ignores `start` and `end` (tried in
@@ -36,7 +34,7 @@ scope cursor pagination to products, orders and fills. So a Delta tape has to be
 **recorded while it happens** - `tools/capture.py`, or `make tape` - and every
 backtest is limited to windows the process was running for.
 
-Tapes used, all fetched 2026-10-23:
+Tapes used, all fetched 2026-10-23 (OKX prints, cross-venue mode):
 
 | Tape | Window | Prints | Hours |
 |---|---|---|---|
@@ -102,11 +100,10 @@ who was aggressive, not of where price is going next.
 - **Fills are simulated.** A print at price P is treated as fillable at P plus
   slippage. Real fills queue, and a 30-second bar's worth of prints is not the
   same as resting liquidity.
-- **No basis is charged, and in the default mode there is none to charge.** These
-  runs read the signal on OKX and filled at Delta, where the price differs, so
-  they *understate* the cost by the basis. The `--basis-bps` flag charges it on
-  entry and every run above is at zero. A same-venue Delta run has no basis by
-  construction, which is part of why Delta is now the default.
+- **No basis is charged.** These runs read the signal on OKX and filled at
+  Delta, where the price differs, so they *understate* the cost by the basis.
+  Every run above is at zero. A same-venue Delta run has no basis by
+  construction, which is the point of reading and filling on one venue.
 - **Short windows.** 23 hours across three days is not a regime. It is enough to
   see that the edge is absent in these windows, not enough to bound how bad it
   can be. Two of the three days are one-sided in the same direction.
@@ -115,12 +112,17 @@ who was aggressive, not of where price is going next.
 
 ## Reproducing
 
+The tables above were produced from OKX tapes that the repository can no longer
+fetch, so these are the commands that would have produced them, kept as a record
+of the shape of the runs. On a Delta tape, drop the fetch step - a tape is
+recorded, not downloaded:
+
 ```bash
-python3 tools/fetch_okx.py --hours 6 --out tape_6h.txt
-python3 tools/backtest.py --tape tape_6h.txt
-python3 tools/backtest.py --tape tape_6h.txt --grid-stop 0.25:3.0:0.25
-python3 tools/backtest.py --tape tape_6h.txt --fee-bps 0 --slippage-bps 0
-python3 tools/backtest.py --tape tape_6h.txt --max-hold 300
+python3 tools/capture.py --minutes 60 --out tape_1h.txt
+python3 tools/backtest.py --tape tape_1h.txt
+python3 tools/backtest.py --tape tape_1h.txt --grid-stop 0.25:3.0:0.25
+python3 tools/backtest.py --tape tape_1h.txt --fee-bps 0 --slippage-bps 0
+python3 tools/backtest.py --tape tape_1h.txt --max-hold 300
 ```
 
 ## The conclusion, stated plainly

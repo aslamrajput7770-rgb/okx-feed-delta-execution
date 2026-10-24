@@ -8,7 +8,7 @@ it has to be recorded while it happens. That is the whole reason this tool
 exists, and it is why it flushes to disk on every frame: a capture that dies at
 hour 23 with everything in memory has cost 23 hours.
 
-    python3 tools/capture.py --venue delta --minutes 1440 --out tape.txt
+    python3 tools/capture.py --minutes 1440 --out tape.txt
 
 The output is `FileTransport` format, so `tools/backtest.py` reads it directly
 and `live_feed.py --replay` can re-run the session it recorded.
@@ -29,18 +29,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from orderflow.feed import DELTA_PUBLIC_WS, DeltaTradeFeed, PUBLIC_WS, OkxTradeFeed  # noqa: E402
+from orderflow.feed import DELTA_PUBLIC_WS, DeltaTradeFeed  # noqa: E402
 
 try:
     import websocket
 except ImportError:  # pragma: no cover - only hit without the optional dep
     websocket = None
-
-
-VENUES = {
-    "delta": (DELTA_PUBLIC_WS, DeltaTradeFeed),
-    "okx": (PUBLIC_WS, OkxTradeFeed),
-}
 
 
 TRADE_TIME = re.compile(rb'"?t"?\s*:\s*(\d{10,})')
@@ -121,8 +115,7 @@ class LiveTransport:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="capture live trade prints to a tape")
-    ap.add_argument("--venue", choices=sorted(VENUES), default="delta")
-    ap.add_argument("--symbol", default=None, help="default: BTCUSD on delta, BTC-USDT-SWAP on okx")
+    ap.add_argument("--symbol", default="BTCUSD")
     ap.add_argument("--minutes", type=float, default=60.0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--uri", default=None, help="override the venue socket")
@@ -130,9 +123,9 @@ def main(argv=None) -> int:
                     help="start a fresh tape even if --out already has one")
     args = ap.parse_args(argv)
 
-    uri, feed_cls = VENUES[args.venue]
-    symbol = args.symbol or ("BTCUSD" if args.venue == "delta" else "BTC-USDT-SWAP")
-    uri = args.uri or uri
+    uri = args.uri or DELTA_PUBLIC_WS
+    feed_cls = DeltaTradeFeed
+    symbol = args.symbol
     seconds = args.minutes * 60.0
 
     stop = {"now": False}

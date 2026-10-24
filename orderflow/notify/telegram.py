@@ -168,7 +168,7 @@ class TelegramNotifier:
             data=body,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "okx-feed-delta-execution",
+                "User-Agent": "delta-feed-execution",
             },
             method="POST",
         )
@@ -244,7 +244,6 @@ def format_signal(
     cumulative_delta: float | None,
     session_volume: float | None = None,
     bars: int | None = None,
-    basis_pct: float | None = None,
     venue: str = "DELTA BTCUSD",
     execution: str = "Delta India BTCUSD",
     mode: str = "paper",
@@ -269,8 +268,6 @@ def format_signal(
         lines.append(f"<b>volume</b>      {_money(session_volume, 4)}")
     if bars is not None:
         lines.append(f"<b>bars</b>        {bars}")
-    if basis_pct is not None:
-        lines.append(f"<b>basis</b>       {_pct(basis_pct)}")
     lines += [
         "",
         f"<i>signal</i>    {venue}",

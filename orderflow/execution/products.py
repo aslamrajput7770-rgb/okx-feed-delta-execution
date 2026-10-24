@@ -112,7 +112,7 @@ def fetch_products(base_url: str, symbol: str | None = None, timeout: float = 10
     symbol lookup look ambiguous.
     """
     url = f"{base_url}/v2/products"
-    req = urllib.request.Request(url, headers={"User-Agent": "okx-feed-delta-execution"})
+    req = urllib.request.Request(url, headers={"User-Agent": "delta-feed-execution"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read() or b"{}")

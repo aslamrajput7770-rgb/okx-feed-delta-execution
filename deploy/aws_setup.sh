@@ -20,10 +20,10 @@
 set -euo pipefail
 
 REPO_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="/opt/okx-feed-delta"
-ENV_DIR="/etc/okx-feed-delta"
-SERVICE_USER="okxfeed"
-UNIT="/etc/systemd/system/okx-feed-delta.service"
+APP_DIR="/opt/delta-feed-execution"
+ENV_DIR="/etc/delta-feed-execution"
+SERVICE_USER="deltafeed"
+UNIT="/etc/systemd/system/delta-feed-execution.service"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -202,9 +202,9 @@ SVCEOF
 fi
 
 say "8/8 systemd unit"
-install -m 0644 "$APP_DIR/deploy/systemd/okx-feed-delta.service" "$UNIT"
+install -m 0644 "$APP_DIR/deploy/systemd/delta-feed-execution.service" "$UNIT"
 systemctl daemon-reload
-systemctl enable okx-feed-delta >/dev/null 2>&1 || true
+systemctl enable delta-feed-execution >/dev/null 2>&1 || true
 echo "  installed and enabled (not started)"
 
 cat <<EOF
@@ -220,14 +220,14 @@ Before starting, prove the two things that fail silently:
 
 Then start it:
 
-  sudo systemctl start okx-feed-delta
-  journalctl -u okx-feed-delta -f
+  sudo systemctl start delta-feed-execution
+  journalctl -u delta-feed-execution -f
 
 It runs SERVICE_MODE=paper for SERVICE_MINUTES at a time and restarts itself.
 To stop it cleanly (this closes any open position and saves the daily counter):
 
-  sudo systemctl stop okx-feed-delta
+  sudo systemctl stop delta-feed-execution
 
 To go live, edit ${SVC_FILE} and set SERVICE_MODE=live with the two
-acknowledgements, then: sudo systemctl restart okx-feed-delta
+acknowledgements, then: sudo systemctl restart delta-feed-execution
 EOF

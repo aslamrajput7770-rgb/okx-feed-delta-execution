@@ -197,11 +197,9 @@ class TestTheFeedLoop:
         assert stats.trades == 1
 
     def test_a_delta_feed_is_a_trade_feed(self):
-        """Both venues must be the same loop, or one of them is untested."""
-        from orderflow.feed import OkxTradeFeed, TradeFeed
+        from orderflow.feed import TradeFeed
 
         assert issubclass(DeltaTradeFeed, TradeFeed)
-        assert issubclass(OkxTradeFeed, TradeFeed)
 
 
 def subscribe_ack() -> str:

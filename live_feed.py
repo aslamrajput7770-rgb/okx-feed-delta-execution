@@ -5,8 +5,9 @@
     python3 live_feed.py --minutes 1 --execute         # real orders (testnet)
     python3 live_feed.py --minutes 1 --execute --live  # real orders (mainnet)
 
-The signal venue is selectable with `--venue`, and it defaults to **delta**:
-the same venue the orders go to. See the note below for why that is the default.
+The signal is read from **Delta Exchange India**, which is also the venue the
+orders go to. There is therefore no basis between the signal price and the fill
+price, and nothing to reconcile between two books.
 
 Safety: the run is a **dry run unless `--execute` is passed**, and execution
 goes to **testnet unless `--live` is also passed**. Two flags must both be
@@ -18,24 +19,6 @@ a typo and a real order.
 Credentials come from the environment and are never read from a file argument:
 
     DELTA_API_KEY  DELTA_API_SECRET
-
-Note on the signal venue
-------------------------
-Orders are always placed at **Delta India**. The signal can be read from either
-venue:
-
-* `--venue delta` (default) reads the same book the order lands on. Signal price
-  and fill price are the same price, so there is no basis to charge and a
-  backtest measures the strategy rather than the spread. Delta publishes fewer
-  prints than OKX (tens per minute rather than hundreds), so the footprint is
-  coarser.
-* `--venue okx` reads OKX, a far busier book. It is a different contract,
-  quoted in USDT rather than USD, on a different order book, with a basis
-  between the two that moves. Acting on an OKX signal at Delta is a
-  **directional** position carrying basis risk, not a hedged arbitrage.
-  `--basis-warn` refuses to trade when the venues are far enough apart that the
-  basis dominates the signal. This mode is kept, but it is no longer the default
-  and it is no longer what the backtest measures.
 """
 
 from __future__ import annotations
@@ -57,7 +40,6 @@ except ImportError:  # pragma: no cover - exercised by the ImportError path
 
 from orderflow import (
     DELTA_BTCUSD,
-    OKX_BTC_USDT_SWAP,
     MarketCalendar,
     SessionChart,
     trading_day_of,
@@ -82,11 +64,9 @@ from orderflow.feed import (
     DELTA_PUBLIC_WS,
     DeltaTradeFeed,
     FileTransport,
-    OkxTradeFeed,
     ReplayTransport,
     record_frames,
 )
-from orderflow.feed.okx import PUBLIC_WS
 from orderflow.notify import (
     NullNotifier,
     format_entry,
@@ -96,13 +76,13 @@ from orderflow.notify import (
     notifier_from_env,
 )
 
-#: Delta's perpetual, which is the venue orders are placed on.
-DEFAULT_INSTRUMENTS = ["BTCUSD"]
-#: The instrument each venue quotes, used to build the chart's tick grid.
-VENUE_INSTRUMENTS = {
-    "delta": ("BTCUSD", DELTA_BTCUSD, DELTA_PUBLIC_WS, DeltaTradeFeed),
-    "okx": ("BTC-USDT-SWAP", OKX_BTC_USDT_SWAP, PUBLIC_WS, OkxTradeFeed),
-}
+#: Delta's BTC perpetual. This is both the signal source and the venue orders
+#: are placed on - there is no second book to read or to reconcile against.
+SIGNAL_SYMBOL = "BTCUSD"
+SIGNAL_INSTRUMENT = DELTA_BTCUSD
+SIGNAL_WS = DELTA_PUBLIC_WS
+SIGNAL_FEED = DeltaTradeFeed
+DEFAULT_INSTRUMENTS = [SIGNAL_SYMBOL]
 
 #: How many synthetic trades `--dry-run` generates. Enough to produce a couple
 #: of bars and a non-zero cumulative delta, so the order path is exercised.
@@ -125,11 +105,10 @@ class _LiveTransport:
 
     is_live = True
 
-    def __init__(self, inst_ids, uri: str, timeout: float = 10.0, venue: str = "delta") -> None:
+    def __init__(self, inst_ids, uri: str, timeout: float = 10.0) -> None:
         self.inst_ids = list(inst_ids)
         self.uri = uri
         self.timeout = timeout
-        self.venue = venue
         self._ws = None
         self.recorded: list[str] = []
         #: Set once a recv fails. A closed socket returns nothing on every later
@@ -155,10 +134,10 @@ class _LiveTransport:
 
     def heartbeat(self) -> None:
         if self._ws is not None:
-            # OKX answers a bare "ping" with "pong"; Delta wants a JSON frame.
-            # Sending the wrong one keeps the TCP connection alive while the
-            # venue stops sending data, which reads as a quiet market.
-            self._ws.send("ping" if self.venue == "okx" else json.dumps({"type": "ping"}))
+            # Delta wants a JSON frame, not a bare "ping". Sending the wrong one
+            # keeps the TCP connection alive while the venue stops sending data,
+            # which reads as a quiet market rather than a dead socket.
+            self._ws.send(json.dumps({"type": "ping"}))
 
     def recv(self, timeout=None):
         if self._ws is None:
@@ -187,32 +166,8 @@ class _LiveTransport:
                 self._ws = None
 
 
-def basis_pct(okx_price: float, delta_price: float) -> float:
-    """Delta's premium over OKX, as a percentage of the OKX price."""
-    if okx_price <= 0:
-        raise ValueError("okx_price must be > 0")
-    return (delta_price - okx_price) / okx_price * 100.0
 
 
-def delta_mark_price(base_url: str, symbol: str, timeout: float = 10.0) -> float:
-    """The venue's mark price, from the public ticker. No credentials needed.
-
-    `mark_price` is used rather than `close` because it is the price the venue
-    values the contract at, which is the number the basis should be measured
-    against.
-    """
-    url = f"{base_url}/v2/tickers/{symbol}"
-    req = urllib.request.Request(url, headers={"User-Agent": "okx-feed-delta-execution"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read() or b"{}")
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
-        raise RuntimeError(f"GET {url} failed: {exc}") from exc
-    result = payload.get("result") or {}
-    mark = result.get("mark_price")
-    if mark is None:
-        raise RuntimeError(f"{url} returned no mark_price")
-    return float(mark)
 
 
 def order_side(cumulative_delta: float) -> str | None:
@@ -259,7 +214,6 @@ class Supervisor:
         state_path=None,
         execute: bool = False,
         seed: int = 1,
-        entry_gate=None,
         max_consecutive_failures: int = 3,
         notifier=None,
         notify_mode: str = "paper",
@@ -272,10 +226,6 @@ class Supervisor:
         self.exec_instrument = exec_instrument
         self.execute = execute
         self.state_path = state_path
-        #: An extra veto applied at entry time, on top of the limits. Used for
-        #: the basis check, which needs a price and therefore cannot run before
-        #: the feed has produced one.
-        self.entry_gate = entry_gate
         #: A circuit breaker. A rejected credential or a blocked IP fails every
         #: order identically, and retrying it on every trade turns one bad
         #: config into a request storm against the venue. Consecutive failures
@@ -329,12 +279,6 @@ class Supervisor:
 
     def _enter(self, side: str, price: float, ts: float, cumulative_delta: float | None = None) -> None:
         """Size, check, and (if executing) send the entry order."""
-        if self.entry_gate is not None:
-            allowed, why = self.entry_gate(price)
-            if not allowed:
-                self.manager._note(f"ENTRY BLOCKED by gate: {why}")
-                return
-
         try:
             sized: SizedOrder = contracts_for_base(
                 self.exec_instrument, self.order_size_base, DELTA_PERP_RULES
@@ -504,17 +448,16 @@ class Supervisor:
         return self.manager.state.realized_pnl_quote
 
 
-def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1,
-                   venue: str = "delta") -> list[str]:
-    """A synthetic, deterministic two-sided tape, in the venue's frame shape.
+def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1) -> list[str]:
+    """A synthetic, deterministic two-sided tape, in Delta's frame shape.
 
     Exists so `--dry-run` is genuinely offline: the flag promises no socket, and
     this is what makes that true. `random.Random(seed)` rather than the module
     RNG, so two dry runs produce identical output.
 
-    The frame shape follows the venue, because the decoder is the venue's. An
-    OKX-shaped frame fed to the Delta decoder decodes to nothing, so a dry run
-    built from the wrong shape would report a healthy feed and zero trades.
+    The shape must be the decoder's shape. A frame in any other venue's format
+    decodes to nothing, so a dry run built from the wrong one would report a
+    healthy feed and zero trades.
     """
     import random
 
@@ -526,20 +469,12 @@ def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1,
         price += rng.choice([-0.5, 0.0, 0.0, 0.5])
         side = "buy" if rng.random() > 0.45 else "sell"
         size = rng.uniform(1.0, 40.0)  # contracts: Delta's unit
-        if venue == "okx":
-            frames.append(json.dumps({
-                "arg": {"channel": "trades", "instId": inst_id},
-                "data": [{"instId": inst_id, "tradeId": str(i), "px": f"{price:.1f}",
-                          "sz": f"{size / 100:.2f}", "side": side,
-                          "ts": str(ts_ms + i * 1000)}],
-            }))
-        else:
-            frames.append(json.dumps({
-                "type": "trades", "sy": inst_id, "p": f"{price:.1f}", "s": round(size, 3),
-                # `r` is the buyer's role: "t" is a buy aggressor, "m" a sell.
-                "r": "t" if side == "buy" else "m",
-                "t": (ts_ms + i * 1000) * 1000, "ts": (ts_ms + i * 1000) * 1000,
-            }))
+        frames.append(json.dumps({
+            "type": "trades", "sy": inst_id, "p": f"{price:.1f}", "s": round(size, 3),
+            # `r` is the buyer's role: "t" is a buy aggressor, "m" a sell.
+            "r": "t" if side == "buy" else "m",
+            "t": (ts_ms + i * 1000) * 1000, "ts": (ts_ms + i * 1000) * 1000,
+        }))
     return frames
 
 
@@ -571,10 +506,6 @@ def _exit_on_sigterm() -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="trade-print feed -> Delta India execution")
-    ap.add_argument("--venue", choices=sorted(VENUE_INSTRUMENTS), default="delta",
-                    help="where the signal is read from. Delta (default) is the venue "
-                         "orders go to, so there is no basis between signal and fill; "
-                         "okx reads a busier book but introduces one")
     ap.add_argument("--instruments", nargs="+", default=None,
                     help="default: the venue's BTC perpetual")
     ap.add_argument("--minutes", type=float, default=0, help="0 means unbounded")
@@ -592,8 +523,6 @@ def main(argv=None) -> int:
     ap.add_argument("--order-size", type=float, default=0.0,
                     help="base-currency exposure per signal; with no --execute this "
                          "only reports the order it would send")
-    ap.add_argument("--basis-warn", type=float, default=0.5,
-                    help="refuse to trade when |basis| exceeds this percent")
     ap.add_argument("--stop-loss-pct", type=float, default=1.0,
                     help="close the position at this loss, percent of entry (0 disables)")
     ap.add_argument("--take-profit-pct", type=float, default=2.0,
@@ -624,9 +553,8 @@ def main(argv=None) -> int:
                          "a silent feed is worse than a stopped one.")
     args = ap.parse_args(argv)
 
-    symbol, venue_instrument, venue_ws, feed_cls = VENUE_INSTRUMENTS[args.venue]
     if args.instruments is None:
-        args.instruments = [symbol]
+        args.instruments = [SIGNAL_SYMBOL]
     args.instruments = list(args.instruments)
 
     # Installed before any socket is opened, so a stop signal that arrives during
@@ -682,7 +610,7 @@ def main(argv=None) -> int:
     elif args.replay is not None:
         print(f"venue      : replay of {args.replay}, no socket")
     else:
-        print(f"venue      : {args.venue.upper()} {venue_ws}")
+        print(f"venue      : DELTA {SIGNAL_WS}")
     print(f"execution  : Delta {environment.value} "
           f"({'orders enabled' if args.execute else 'DRY RUN, no orders'})")
     if args.execute:
@@ -691,19 +619,19 @@ def main(argv=None) -> int:
         print(f"credentials: {creds!r}")
 
     cal = MarketCalendar()
-    chart = SessionChart(venue_instrument.grid(), cal, bar_seconds=args.bar_seconds)
+    chart = SessionChart(SIGNAL_INSTRUMENT.grid(), cal, bar_seconds=args.bar_seconds)
 
     capture: list[str] = []
     transport_holder = {}
 
     def factory():
         if args.dry_run:
-            return ReplayTransport(dry_run_frames(args.instruments[0], venue=args.venue))
-        t = make_transport(args.instruments, venue_ws, replay_path=args.replay)()
+            return ReplayTransport(dry_run_frames(args.instruments[0]))
+        t = make_transport(args.instruments, SIGNAL_WS, replay_path=args.replay)()
         transport_holder["t"] = t
         return t
 
-    feed = feed_cls(args.instruments, factory)
+    feed = SIGNAL_FEED(args.instruments, factory)
     max_seconds = args.minutes * 60.0 if args.minutes > 0 else None
 
     # The feed is run exactly once, and the supervisor is attached to that one
@@ -715,7 +643,6 @@ def main(argv=None) -> int:
     # first frame arrives.
     supervisor = None
     limits = None
-    gate = None
     notify_mode = "live" if args.execute else "paper"
 
     # Resolve and size the order whenever a size was requested, not only when
@@ -758,32 +685,6 @@ def main(argv=None) -> int:
               f"hold {limits.max_hold_seconds:g}s")
         print(f"risk state   : {args.risk_state or 'not persisted'}")
 
-        # The basis is the risk that the two venues are not the same instrument:
-        # a position taken on an OKX signal at Delta carries whatever the spread
-        # between them does. The check needs a price, so it runs at entry time
-        # through the gate rather than here.
-        #
-        # Only meaningful on a live feed: a replayed capture holds historical
-        # prices, so comparing them to today's mark price measures the elapsed
-        # time, not the basis.
-        # The basis gate only means anything when the signal and the fill are on
-        # different venues. Reading the signal on Delta and filling on Delta has
-        # no basis to check, and comparing a price to itself would pass trivially
-        # while looking like a real guard.
-        if args.basis_warn > 0 and not offline and args.venue != "delta":
-            def gate(price: float, _limit=args.basis_warn):
-                try:
-                    delta_px = delta_mark_price(BASE_URLS[environment], DELTA_BTCUSD.symbol)
-                except RuntimeError as exc:
-                    if args.execute:
-                        return False, f"basis unreadable ({exc})"
-                    return True, f"basis unreadable ({exc}), not executing"
-                b = basis_pct(price, delta_px)
-                if abs(b) > _limit:
-                    return False, (f"|basis| {abs(b):.3f}% exceeds {_limit:g}% "
-                                   f"({args.venue.upper()} {price:g} vs Delta {delta_px:g})")
-                return True, f"basis {b:+.3f}%"
-
         if not args.execute:
             where = "static template" if product is None else f"product_id={product.venue_id}"
             print(f"dry run      : would trade up to "
@@ -804,11 +705,10 @@ def main(argv=None) -> int:
             state_path=args.risk_state,
             execute=args.execute,
             seed=int(time.time()),
-            entry_gate=gate,
             max_consecutive_failures=args.max_order_failures,
             notifier=notifier,
             notify_mode=notify_mode,
-            venue=f"{args.venue.upper()} {args.instruments[0]}",
+            venue=f"DELTA {args.instruments[0]}",
         )
         if supervisor.manager.state.day_key:
             print(f"risk day     : {supervisor.manager.state.day_key} "

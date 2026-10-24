@@ -1,10 +1,9 @@
 # Trade-print feed -> Delta Exchange India execution
 
 Order-flow analytics driven by **perpetual trade flow**, with orders placed on
-**Delta Exchange India**. The signal is read from Delta by default - the same
-venue the order lands on - so the signal price and the fill price are the same
-price. OKX can be selected as the signal source instead, which is the
-cross-venue mode described below.
+**Delta Exchange India**. The signal is read from Delta too - the same venue the
+order lands on - so the signal price and the fill price are the same price, and
+there is no second book to reconcile against.
 
 ## Quickstart
 
@@ -13,7 +12,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (353 tests), and then runs the read-only
+dependencies, runs the offline suite (309 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
@@ -48,39 +47,33 @@ assumed, and the known gaps. Read it before changing anything.
 
 ## Read this first
 
-**The default is single-venue: signal and execution both on Delta India.** The
-order always goes to Delta; `--venue delta` (the default) also reads the signal
-there. Signal price and fill price are then the same price, so there is no basis
-to pay and a backtest measures the strategy rather than the spread. The cost is
-resolution: Delta publishes tens of prints a minute where OKX publishes
-hundreds, so the footprint is coarser.
+**One venue: signal and execution both on Delta India.** The order goes to
+Delta, and the signal is read there too. Signal price and fill price are the
+same price, so there is no basis to pay and a backtest measures the strategy
+rather than the spread. Delta is the only feed; the OKX path was removed.
 
-**`--venue okx` is the cross-venue mode, and that one is not arbitrage.** OKX
-becomes the *signal* venue while Delta India stays the *execution* venue. They
-are two different contracts:
+The trade-off that comes with that, stated plainly: Delta publishes tens of
+prints a minute, so the footprint is coarse. That is accepted, because reading a
+busier book elsewhere would mean acting on one book while filling on another,
+and that is a different trade with a cost that never appears in a
+signal-quality number.
 
-| | OKX `BTC-USDT-SWAP` | Delta India `BTCUSD` |
-|---|---|---|
-| Type | perpetual | perpetual |
-| Tick | 0.1 | 0.5 (production) |
-| 1 contract | **0.01 BTC** | **0.001 BTC** |
-| Settles in | **USDT** | **USD** |
-| Product id | `BTC-USDT-SWAP` | 27 on production, **84 on testnet** |
-
-They are quoted in different currencies, on different order books, and the
-price difference (the *basis*) moves. Acting on an OKX signal at Delta is a
-**directional position carrying basis risk**, not a hedged trade. There is no
-hedging leg here, because a hedge needs both venues and this account only
-trades one.
+| | Delta India `BTCUSD` |
+|---|---|
+| Type | perpetual |
+| Tick | 0.5 (production) |
+| 1 contract | **0.001 BTC** |
+| Settles in | **USD** |
+| Product id | 27 on production, **84 on testnet** |
 
 Two consequences that matter more than any line of code:
 
 1. **Sizing.** One contract is not one coin. `orderflow/execution/sizing.py`
-   converts exposure through each venue's `contract_value`. Copying a size
-   number between venues is out by 10x and raises nothing.
+   converts exposure through the instrument's `contract_value`. Sending a size
+   number as if it were coins is out by 1000x and raises nothing.
 2. **Tax and liquidity.** Delta India carries 30% tax and 1% TDS on crypto, and
-   thinner books than OKX. A signal that is profitable on paper can be
-   unprofitable after the spread, the tax, and the slippage.
+   a thinner book than the global venues. A signal that is profitable on paper
+   can be unprofitable after the spread, the tax, and the slippage.
 
 ## Risk limits
 
@@ -123,38 +116,29 @@ python3 live_feed.py --minutes 60 --execute --order-size 0.002 \
 orderflow/
   core.py  ticks.py  footprint.py  profile.py  delta.py   # engine, unchanged
   tape.py  dom.py  indicators.py  render.py
-  instruments.py     # OKX and Delta contract specs, cross-venue conversion
+  instruments.py     # Delta contract spec and contract-size conversion
   session.py         # 24/7 crypto calendar, resets at 00:00 UTC
   session_chart.py   # daily reset for cumulative delta and the profile
-  feed/base.py       # transport, dedup, reconnect, the run loop (both venues)
+  feed/base.py       # transport, dedup, reconnect, the run loop
   feed/delta.py      # Delta India ingestion, buyer role -> aggressor side
-  feed/okx.py        # OKX ingestion, taker side
-  execution/sizing.py       # contract arithmetic between the two venues
+  execution/sizing.py       # contract arithmetic for Delta
   execution/delta_client.py # signed REST orders, dry-run and testnet default
 tools/capture.py   # record live prints to a backtest tape
 tools/backtest.py  # replay a tape through the shipped rules
-tools/fetch_okx.py # page OKX history into a tape (cross-venue mode)
 live_feed.py       # live runner
-diagnose_okx.py    # verdict on a recorded OKX capture
 ```
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-python3 -m pytest tests -q          # 353 tests, no network
+python3 -m pytest tests -q          # 309 tests, no network
 
 # Live Delta market data, no orders, no credentials needed
 python3 live_feed.py --minutes 1 --record capture.txt
 
 # Replay offline
 python3 live_feed.py --replay capture.txt
-
-# Read the signal from OKX instead (cross-venue mode)
-python3 live_feed.py --venue okx --minutes 1 --record capture.txt
-
-# Check an OKX recording: confirms the side mapping is not inverted
-python3 diagnose_okx.py capture.txt
 
 # Backtest: record a day, then replay it through the shipped rules
 make tape                           # 1440 minutes, live, no orders
@@ -184,34 +168,23 @@ old default of `0` made a bare `python3 live_feed.py` hang forever. Use
 `--dry-run` for an offline check: it replays a synthetic tape and opens no
 socket at all.
 
-`--basis-warn` refuses to place an order when the signal/Delta basis exceeds the
-given percentage, and refuses on a live order when the basis cannot be read. It
-applies to the cross-venue mode only: with `--venue delta` the signal is read on
-the venue the order goes to, so the basis is zero by construction and the guard
-is skipped rather than passing trivially.
-
 ## Two things that were silent failures upstream
 
 Both are pinned by tests, and both are worth understanding before changing the
 feed.
 
-**1. The aggressor side must not be inverted.** Both venues report the side, in
-different vocabularies, and both are easy to read backwards.
-
-OKX reports the **taker** side: `buy` means the taker bought, so the offer was
-lifted and volume belongs on the ask.
+**1. The aggressor side must not be inverted.** Delta reports the side in a
+vocabulary that is easy to read backwards.
 
 Delta reports the **buyer's role**: `r="t"` means the buyer was the taker, so the
 aggressor bought; `r="m"` means the buyer was a maker, so the aggressor sold. It
 is the buyer's role, not the taker's side, and reading it as the taker's side
 inverts every print.
 
-Either inversion produces a footprint that renders perfectly with a plausible
-delta on every bar — and the sign of every signal is wrong.
-`tests/test_okx_protocol.py::TestTakerSideMapping` and
-`tests/test_delta_protocol.py` assert that a buy print makes bar delta positive,
-which is the assertion that catches it. `diagnose_okx.py` re-checks the OKX side
-against a recording.
+The inversion produces a footprint that renders perfectly with a plausible delta
+on every bar — and the sign of every signal is wrong.
+`tests/test_delta_protocol.py` asserts that a buy print makes bar delta positive,
+which is the assertion that catches it.
 
 **2. Deduplication is on `tradeId`.** A reconnect replays trades already seen.
 Without dedup, volume is double-counted at the reconnect boundary and nothing
@@ -282,11 +255,11 @@ python3 preflight_delta.py          # testnet keys; read-only, places no order
 
 - **No geo-block bypass.** Binance blocks this environment with HTTP 451 from
   the US as well as from India, so relocating to another region does not help.
-  OKX and Coinbase are reachable and are used instead. Bypassing a venue's
-  geographic restrictions is not something this project does.
-- **No binary decoder.** OKX sends JSON, so the Angel One `unpack`/`price_scale`
-  layer is gone rather than ported.
-- **No side inference.** The quote rule and tick rule are deleted. OKX states
+  Bypassing a venue's geographic restrictions is not something this project
+  does.
+- **No binary decoder.** Delta sends JSON, so the Angel One
+  `unpack`/`price_scale` layer is gone rather than ported.
+- **No side inference.** The quote rule and tick rule are deleted. Delta states
   the side, so the old guessing path — and the `Side.UNKNOWN` bucket it produced
   — no longer exists on this feed.
 
@@ -329,13 +302,13 @@ rather than a flag appended to the one already in your shell history.
 On the host that holds the whitelisted IP, install it as a systemd unit:
 
     sudo ./deploy/aws_setup.sh        # installs, does not start, does not go live
-    sudo systemctl start okx-feed-delta
-    journalctl -u okx-feed-delta -f
+    sudo systemctl start delta-feed-execution
+    journalctl -u delta-feed-execution -f
 
 The unit file and the mode switch are both in this repository, so the deployed
 code and the deployed configuration cannot drift: the clone is the deployment.
 `SERVICE_MODE=paper` is the installed default; going live takes three explicit
-edits in `/etc/okx-feed-delta/service.env` (`SERVICE_MODE=live` plus
+edits in `/etc/delta-feed-execution/service.env` (`SERVICE_MODE=live` plus
 `DELTA_ORDER_SIZE` and `I_KNOW_THIS_IS_LIVE=1`).
 
 It runs bounded windows and restarts itself, so the per-day loss counter resets

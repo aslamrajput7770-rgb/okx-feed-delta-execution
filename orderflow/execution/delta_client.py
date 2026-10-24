@@ -273,7 +273,7 @@ class DeltaOrderClient:
             "signature": generate_signature(self.credentials.api_secret, data),
             "timestamp": timestamp,
             "Content-Type": "application/json",
-            "User-Agent": "okx-feed-delta-execution",
+            "User-Agent": "delta-feed-execution",
         }
 
     # ------------------------------------------------------------------- clock
@@ -387,7 +387,7 @@ class DeltaOrderClient:
         tell the user to fix a clock that was already right.
         """
         headers = {
-            "User-Agent": "okx-feed-delta-execution",
+            "User-Agent": "delta-feed-execution",
             "Range": "bytes=0-0",
         }
         # The cache-buster is applied before the transport, so an injected

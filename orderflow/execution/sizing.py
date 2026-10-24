@@ -1,16 +1,15 @@
-"""Cross-venue position sizing.
+"""Position sizing.
 
 The bug this module exists to prevent, stated plainly: **one contract is not
-one coin, and the two venues disagree by a factor of ten.**
+one coin.**
 
-    OKX   BTC-USDT-SWAP : 1 contract = 0.01 BTC
     Delta BTCUSD (id 27): 1 contract = 0.001 BTC
 
-A system that decides "buy 1 BTC" on OKX and then sends "size = 1" to Delta has
-sent 0.001 BTC, not 1 BTC. Nothing raises. The order fills, the position looks
-smaller than intended, and the only symptom is a P&L that does not match the
-backtest. This is the same class of silent error as a missing price-scale
-division in a tick feed.
+A system that decides "buy 1 BTC" and then sends "size = 1" has sent 0.001 BTC,
+not 1 BTC. Nothing raises. The order fills, the position looks smaller than
+intended, and the only symptom is a P&L that does not match the backtest. This
+is the same class of silent error as a missing price-scale division in a tick
+feed.
 
 So a size is never a bare number here. It is a `SizedOrder`: a whole number of
 *contracts* on a named venue, produced by converting a base-currency exposure
@@ -38,9 +37,8 @@ class SizingError(ValueError):
 class VenueRules:
     """The lot arithmetic a venue applies to an order size.
 
-    `lot_step` is in *contracts*: OKX accepts 0.01-contract steps on
-    BTC-USDT-SWAP, Delta accepts whole contracts. `min_contracts` is the
-    smallest order the venue will accept at all.
+    `lot_step` is in *contracts*: Delta accepts whole contracts.
+    `min_contracts` is the smallest order the venue will accept at all.
     """
 
     lot_step: float
@@ -53,8 +51,7 @@ class VenueRules:
             raise ValueError("min_contracts must be > 0")
 
 
-#: Verified from the live venue specs (2026-10-22).
-OKX_SWAP_RULES = VenueRules(lot_step=0.01, min_contracts=0.01)
+#: Verified from the live venue spec (2026-10-22).
 DELTA_PERP_RULES = VenueRules(lot_step=1.0, min_contracts=1.0)
 
 

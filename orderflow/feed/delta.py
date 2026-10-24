@@ -1,10 +1,10 @@
 """Delta Exchange India JSON WebSocket ingestion.
 
-Delta is the venue this system *executes* on. Reading the signal from the same
-venue the order goes to removes the basis: an OKX signal filled at Delta carries
-whatever spread the two venues have, which is a cost that shows up nowhere in a
-signal-quality measurement. Reading and trading one venue makes the backtest
-about the strategy instead of about the spread.
+Delta is the venue this system both *reads* and *executes* on. Reading the signal
+from the same venue the order goes to removes the basis: a signal read on one
+book and filled on another carries whatever spread the two have, which is a cost
+that shows up nowhere in a signal-quality measurement. Reading and trading one
+venue makes the backtest about the strategy instead of about the spread.
 
 Protocol, from the venue's own spec (verified against the live socket):
 

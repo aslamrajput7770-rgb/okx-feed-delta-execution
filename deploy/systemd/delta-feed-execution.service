@@ -1,6 +1,6 @@
 [Unit]
 Description=Signal feed -> Delta India execution (paper by default)
-Documentation=file:///opt/okx-feed-delta/AGENTS.md
+Documentation=file:///opt/delta-feed-execution/AGENTS.md
 # The venue is the dependency that matters. Without it the unit would start,
 # fail to resolve a product, and restart in a loop that looks like a crash.
 After=network-online.target chrony.service
@@ -8,16 +8,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=okxfeed
-Group=okxfeed
-WorkingDirectory=/opt/okx-feed-delta
+User=deltafeed
+Group=deltafeed
+WorkingDirectory=/opt/delta-feed-execution
 
 # Secrets, then the mode. Two files so the one that is edited to change
 # behaviour is not the one holding a credential.
-EnvironmentFile=/etc/okx-feed-delta/env
-EnvironmentFile=/etc/okx-feed-delta/service.env
+EnvironmentFile=/etc/delta-feed-execution/env
+EnvironmentFile=/etc/delta-feed-execution/service.env
 
-ExecStart=/opt/okx-feed-delta/deploy/run_service.sh
+ExecStart=/opt/delta-feed-execution/deploy/run_service.sh
 
 # A stop signal is a request to close the position, and that takes as long as
 # the venue takes. Too short a timeout here kills the process mid-close, which
@@ -39,14 +39,14 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/okx-feed-delta/state
+ReadWritePaths=/opt/delta-feed-execution/state
 # The venue signs with a timestamp, so the clock is part of the protocol.
 ProtectClock=false
 
-# Journald is the log. `journalctl -u okx-feed-delta -f` is the whole story.
+# Journald is the log. `journalctl -u delta-feed-execution -f` is the whole story.
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=okx-feed-delta
+SyslogIdentifier=delta-feed-execution
 
 [Install]
 WantedBy=multi-user.target

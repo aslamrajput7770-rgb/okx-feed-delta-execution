@@ -10,7 +10,7 @@
 #   * the engine refuses `--minutes 0` on a live socket on purpose, and that
 #     guard is not weakened for the service.
 #
-# Mode is chosen by SERVICE_MODE in /etc/okx-feed-delta/service.env:
+# Mode is chosen by SERVICE_MODE in /etc/delta-feed-execution/service.env:
 #   paper  (default) live feed, signals to Telegram, nothing sent to Delta
 #   live             real orders; also needs DELTA_ORDER_SIZE and the ack below
 set -euo pipefail
@@ -30,15 +30,14 @@ order_size="${PAPER_ORDER_SIZE:-0.001}"
 # shell. A missing pair is a refusal, not a silent run.
 if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
     echo "no Telegram credentials in the environment; refusing to run unseen." >&2
-    echo "Set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in /etc/okx-feed-delta/env." >&2
+    echo "Set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in /etc/delta-feed-execution/env." >&2
     exit 1
 fi
 
-# The signal venue defaults to delta: the same venue the orders go to, so the
-# signal price and the fill price are the same price and there is no basis to
-# pay. Set SIGNAL_VENUE=okx in service.env to read the busier OKX book instead.
+# Delta is the only signal source: it is the venue the orders go to, so the
+# signal price and the fill price are the same price and there is no basis.
 args=(--live --minutes "$minutes" --bar-seconds "${BAR_SECONDS:-30}"
-      --order-size "$order_size" --telegram --venue "${SIGNAL_VENUE:-delta}")
+      --order-size "$order_size" --telegram)
 
 if [[ "${TELEGRAM_EVERY_SIGNAL:-0}" == "1" ]]; then
     args+=(--telegram-every-signal)

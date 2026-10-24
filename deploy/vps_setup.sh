@@ -11,13 +11,13 @@
 #
 #   sudo ./deploy/vps_setup.sh
 #
-# It prompts for the credentials and writes them to /etc/okx-feed-delta/env
+# It prompts for the credentials and writes them to /etc/delta-feed-execution/env
 # with mode 0600; they are never committed. Nothing here places an order.
 
 set -u
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_DIR="/etc/okx-feed-delta"
+ENV_DIR="/etc/delta-feed-execution"
 ENV_FILE="${ENV_DIR}/env"
 PY=python3
 

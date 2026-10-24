@@ -24,11 +24,8 @@ of the shipped rules is the only kind worth running.
 
 Fees default to Delta India's taker rate.
 
-The venue matters and is selectable. Reading the signal on Delta - the venue the
-order is placed on - removes the basis entirely, so the result is about the
-strategy rather than about the spread between two venues. Reading it on OKX and
-filling at Delta is the cross-venue mode, where the basis is a real cost and
-`--basis-bps` charges it.
+The tape is Delta's, and so is the fill, so the result is about the strategy
+rather than about the spread between two venues. There is no basis to charge.
 """
 
 from __future__ import annotations
@@ -49,8 +46,7 @@ from orderflow.execution.risk import ExitReason, RiskLimits  # noqa: E402
 from orderflow.execution.sizing import DELTA_PERP_RULES  # noqa: E402
 from orderflow.feed import base as feed_base  # noqa: E402
 from orderflow.feed.delta import parse_message as parse_delta  # noqa: E402
-from orderflow.feed.okx import parse_message as parse_okx  # noqa: E402
-from orderflow.instruments import DELTA_BTCUSD, OKX_BTC_USDT_SWAP  # noqa: E402
+from orderflow.instruments import DELTA_BTCUSD  # noqa: E402
 from orderflow.session_chart import SessionChart  # noqa: E402
 from orderflow.session import MarketCalendar  # noqa: E402
 
@@ -61,15 +57,12 @@ import live_feed  # noqa: E402
 #: One Delta contract is 0.001 BTC. Used to express results in contracts.
 CONTRACT_BTC = 0.001
 
-#: Venue -> (frame decoder, the instrument whose tick grid the chart uses).
-#:
-#: The decoder must match the venue the tape was recorded from. Feeding Delta
-#: frames to the OKX decoder is not a near-miss: it returns no prints at all,
-#: because the OKX decoder keys on `arg.channel` and Delta sends `type`.
-VENUES = {
-    "delta": (parse_delta, DELTA_BTCUSD),
-    "okx": (parse_okx, OKX_BTC_USDT_SWAP),
-}
+#: The decoder for the tape, and the instrument whose tick grid the chart uses.
+#: There is one venue, so there is no lookup and no chance of decoding a tape
+#: with the wrong venue's parser - which would return no prints at all rather
+#: than fail loudly.
+DECODE = parse_delta
+CHART_INSTRUMENT = DELTA_BTCUSD
 
 TradeEvent = feed_base.TradeEvent
 
@@ -80,14 +73,11 @@ class Costs:
 
     `fee_bps` is charged per side, on notional. `slippage_bps` is charged per
     side too: a market order crosses the spread, and the spread is not in a
-    trade-print tape. `basis_bps` is charged once on entry, and only in basis
-    mode, because the signal is read on OKX and the fill happens on Delta where
-    the price differs by the basis.
+    trade-print tape.
     """
 
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
-    basis_bps: float = 0.0
 
 
 class SimBroker:
@@ -236,13 +226,12 @@ class Result:
         return (self.end_price - self.start_price) / self.start_price * 100.0
 
 
-def load_tape(path: Path, venue: str = "delta") -> list[TradeEvent]:
+def load_tape(path: Path) -> list[TradeEvent]:
     """Decode a `FileTransport` tape into prints, deduplicated on trade id.
 
     The same decode path a live socket uses, so a tape cannot smuggle in a
     shape the live feed would reject.
     """
-    decoder, _ = VENUES[venue]
     seen: set[str] = set()
     events: list[TradeEvent] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -252,7 +241,7 @@ def load_tape(path: Path, venue: str = "delta") -> list[TradeEvent]:
         payload = line[4:] if line.startswith("txt:") else None
         if payload is None:
             continue  # binary frames are not produced by either venue
-        for ev in decoder(payload):
+        for ev in DECODE(payload):
             if ev.trade_id in seen:
                 continue
             seen.add(ev.trade_id)
@@ -266,9 +255,6 @@ def run_backtest(
     limits: RiskLimits,
     order_size_base: float,
     costs: Costs,
-    basis_mode: bool,
-    use_gate: bool,
-    venue: str = "delta",
     verbose: bool = False,
 ) -> Result:
     """Drive the shipped supervisor over a decoded tape.
@@ -290,19 +276,6 @@ def run_backtest(
 
     # No risk-state file: a backtest must not write the live daily counter, and
     # must not read a stale one either.
-    gate = None
-    if use_gate:
-        warn = 0.5
-
-        def gate(price: float) -> tuple[bool, str]:
-            # Basis mode stands in for Delta's price with a fixed offset, so the
-            # gate is exercised without a second feed.
-            delta_price = price * (1.0 + costs.basis_bps / 10_000.0)
-            bp = live_feed.basis_pct(price, delta_price)
-            if abs(bp) > warn:
-                return False, f"basis {bp:+.3f}% exceeds {warn:g}%"
-            return True, "ok"
-
     supervisor = live_feed.Supervisor(
         client=broker,
         limits=limits,
@@ -312,13 +285,11 @@ def run_backtest(
         state_path=None,
         execute=True,
         seed=1,
-        entry_gate=gate,
         notifier=None,
     )
 
     cal = MarketCalendar()
-    _, chart_instrument = VENUES[venue]
-    chart = SessionChart(chart_instrument.grid(), cal, bar_seconds=30.0)
+    chart = SessionChart(CHART_INSTRUMENT.grid(), cal, bar_seconds=30.0)
     running = RunningDelta(chart)
 
     result = Result()
@@ -346,13 +317,13 @@ def run_backtest(
                 "side": now_pos.side,
             }
             open_entry["entry_cost"] = _notional_cost(
-                now_pos.entry_price, now_pos.size_base, costs, entry=True, basis_mode=basis_mode
+                now_pos.entry_price, now_pos.size_base, costs, entry=True
             )
         elif was_position is not None and now_pos is None:
             # Exit filled. Both legs are priced at their slipped fills, so the
             # simulated PnL is not silently given a free entry.
             assert open_entry is not None
-            exit_cost = _notional_cost(trade.price, was_position.size_base, costs, entry=False, basis_mode=basis_mode)
+            exit_cost = _notional_cost(trade.price, was_position.size_base, costs, entry=False)
             fill_price = broker._fill_price(was_position.exit_side)
             true_pnl = _pnl(was_position.side, was_position.size_base, open_entry["fill"], fill_price)
             result.trades.append(
@@ -383,7 +354,7 @@ def run_backtest(
         last = events[-1]
         p = supervisor.manager.position
         fill_price = broker._fill_price(p.exit_side)
-        exit_cost = _notional_cost(last.price, p.size_base, costs, entry=False, basis_mode=basis_mode)
+        exit_cost = _notional_cost(last.price, p.size_base, costs, entry=False)
         entry_fill = open_entry["fill"] if open_entry else p.entry_price
         result.trades.append(
             Fill(
@@ -429,11 +400,9 @@ def _pnl(side: str, size_base: float, entry: float, exit_price: float) -> float:
     return size_base * (move if side == "buy" else -move)
 
 
-def _notional_cost(price: float, size_base: float, costs: Costs, entry: bool, basis_mode: bool) -> float:
+def _notional_cost(price: float, size_base: float, costs: Costs, entry: bool) -> float:
     notional = price * size_base
     bps = costs.fee_bps + costs.slippage_bps
-    if entry and basis_mode:
-        bps += costs.basis_bps
     return notional * bps / 10_000.0
 
 
@@ -475,8 +444,7 @@ def report(r: Result, limits: RiskLimits, order_size_base: float, costs: Costs, 
           f"cap {limits.max_position_base:g} BTC  "
           f"daily {limits.max_daily_loss_quote:g}")
     print(f"  costs         : fee {costs.fee_bps:g} bps/side  "
-          f"slip {costs.slippage_bps:g} bps/side  "
-          f"basis {costs.basis_bps:g} bps/entry")
+          f"slip {costs.slippage_bps:g} bps/side")
     print(f"{'-' * 62}")
     print(f"  trades        : {len(r.trades)}")
     print(f"  win / loss    : {r.wins} / {r.losses}"
@@ -541,8 +509,6 @@ def _parse_triple(s: str) -> tuple[float, float, float]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Backtest the shipped signal loop over a tape.")
     ap.add_argument("--tape", type=Path, required=True)
-    ap.add_argument("--venue", choices=sorted(VENUES), default="delta",
-                    help="which venue recorded the tape (default: delta)")
     ap.add_argument("--expect-hours", type=float, default=24.0,
                     help="warn when the tape is shorter than this; a partial "
                          "capture read as a full-day result is the trap")
@@ -554,9 +520,6 @@ def main(argv=None) -> int:
     ap.add_argument("--order-size", type=float, default=0.001, help="base currency per trade")
     ap.add_argument("--fee-bps", type=float, default=5.0, help="per side, on notional")
     ap.add_argument("--slippage-bps", type=float, default=2.0, help="per side")
-    ap.add_argument("--basis-bps", type=float, default=0.0,
-                    help="entry only, cross-venue mode; charged once on entry")
-    ap.add_argument("--no-gate", action="store_true", help="disable the basis entry gate")
     ap.add_argument("--grid-stop", type=_parse_triple, default=None,
                     help="sweep stop:target:step, e.g. 0.25:1.0:0.25")
     ap.add_argument("--verify-delta", action="store_true",
@@ -568,12 +531,12 @@ def main(argv=None) -> int:
         print(f"no such tape: {args.tape}", file=sys.stderr)
         return 2
 
-    events = load_tape(args.tape, args.venue)
+    events = load_tape(args.tape)
     if not events:
-        print(f"the tape decoded to no prints with the {args.venue} decoder", file=sys.stderr)
+        print("the tape decoded to no prints", file=sys.stderr)
         return 1
     span_h = (events[-1].ts_ms - events[0].ts_ms) / 3_600_000.0
-    print(f"tape: {args.tape}  [{args.venue}]  {len(events):,} prints over {span_h:.2f} h")
+    print(f"tape: {args.tape}  [delta]  {len(events):,} prints over {span_h:.2f} h")
 
     # A recording is only as long as the process that made it. Every number below
     # is over the window that exists, not the window that was intended, and a
@@ -586,7 +549,7 @@ def main(argv=None) -> int:
         print("     Every figure below covers this window only. Do not quote it "
               "as a full-day result.", file=sys.stderr)
 
-    costs = Costs(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps, basis_bps=args.basis_bps)
+    costs = Costs(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
     results = []
 
     if args.grid_stop:
@@ -605,8 +568,7 @@ def main(argv=None) -> int:
                 max_hold_seconds=args.max_hold,
             )
             r = run_backtest(events, limits, args.order_size, costs,
-                             basis_mode=args.basis_bps > 0, use_gate=not args.no_gate,
-                             venue=args.venue, verbose=args.verify_delta)
+                             verbose=args.verify_delta)
             net = r.net_pnl
             print(f"  stop {stop:5.2f}%  target {target:5.2f}%  "
                   f"trades {len(r.trades):5d}  net {net:+10.2f}  dd {r.max_drawdown():+9.2f}")
@@ -624,8 +586,7 @@ def main(argv=None) -> int:
             max_hold_seconds=args.max_hold,
         )
         r = run_backtest(events, limits, args.order_size, costs,
-                         basis_mode=args.basis_bps > 0, use_gate=not args.no_gate,
-                         venue=args.venue, verbose=args.verify_delta)
+                         verbose=args.verify_delta)
         results.append(report(r, limits, args.order_size, costs, "shipped rules"))
 
     if args.json_out:

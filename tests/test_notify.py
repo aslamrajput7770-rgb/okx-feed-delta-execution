@@ -233,9 +233,8 @@ class TestFormatting:
         text = format_signal(side=None, price=None, cumulative_delta=None)
         assert "n/a" in text
 
-    def test_basis_is_shown_when_present_and_absent_when_not(self):
-        assert "basis" in format_signal(side="buy", price=1.0, cumulative_delta=1.0,
-                                        basis_pct=0.25)
+    def test_no_basis_line_is_rendered(self):
+        """There is one venue, so a basis field would always be noise."""
         assert "basis" not in format_signal(side="buy", price=1.0, cumulative_delta=1.0)
 
     def test_entry_reports_size_and_contracts(self):
@@ -276,28 +275,27 @@ class TestFormatting:
 class TestTheMessageNamesTheVenue:
     """The notice must say which book the signal came from.
 
-    Delta is the default and OKX is opt-in, so a message that always says OKX is
-    wrong most of the time - and it is the field a reader uses to decide whether
-    a fill and a signal are the same instrument.
+    It is the field a reader uses to decide whether a fill and a signal are the
+    same instrument, so it must name Delta and never a venue the system no
+    longer reads.
     """
 
-    def test_signal_defaults_to_delta(self):
+    def test_signal_names_delta(self):
         text = format_signal(side="buy", price=80_000.0, cumulative_delta=12.0)
         assert "DELTA BTCUSD" in text
-        assert "OKX" not in text
 
-    def test_signal_can_name_okx(self):
-        text = format_signal(side="buy", price=80_000.0, cumulative_delta=12.0,
-                             venue="OKX BTC-USDT-SWAP")
-        assert "OKX BTC-USDT-SWAP" in text
+    def test_a_signal_never_names_another_venue(self):
+        """The stale-label regression: the text used to say OKX by default."""
+        text = format_signal(side="buy", price=80_000.0, cumulative_delta=12.0)
+        assert "OKX" not in text
 
     def test_entry_carries_the_venue_through(self):
         text = format_entry(side="buy", price=80_000.0, size_base=0.001, contracts=1,
-                            cumulative_delta=12.0, venue="OKX BTC-USDT-SWAP")
-        assert "OKX BTC-USDT-SWAP" in text
+                            cumulative_delta=12.0, venue="DELTA BTCUSD")
+        assert "DELTA BTCUSD" in text
 
     def test_exit_carries_the_venue_through(self):
         text = format_exit(side="buy", price=80_000.0, entry_price=79_000.0,
                            reason="take_profit", pnl_quote=1.0,
-                           venue="OKX BTC-USDT-SWAP")
-        assert "OKX BTC-USDT-SWAP" in text
+                           venue="DELTA BTCUSD")
+        assert "DELTA BTCUSD" in text

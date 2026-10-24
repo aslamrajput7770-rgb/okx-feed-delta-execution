@@ -5,8 +5,6 @@
 PY := ./.venv/bin/python
 PAPER_MINUTES ?= 5
 PAPER_ORDER_SIZE ?= 0.001
-# Which venue the signal is read from. delta = the venue orders go to.
-SIGNAL_VENUE ?= delta
 TAPE_MINUTES ?= 1440
 TAPE_OUT ?= tape.txt
 TAPE ?= tape.txt
@@ -22,7 +20,7 @@ help:
 	@echo "make paper-tg   live feed, signals to Telegram, sends nothing"
 	@echo "make telegram-check  prove the bot can reach the chat"
 	@echo "make live       REAL ORDERS - needs DELTA_ORDER_SIZE set"
-	@echo "make feed       raw OKX feed capture, no execution leg"
+	@echo "make feed       raw Delta feed capture, no execution leg"
 	@echo "make service-install  install as a systemd service (needs sudo), paper mode"
 	@echo "make service-start    start it"
 	@echo "make service-logs     follow the journal"
@@ -64,13 +62,13 @@ feed:
 # it happens. One day is the default because that is the shortest window
 # that contains more than one regime.
 tape:
-	$(PY) tools/capture.py --venue $(SIGNAL_VENUE) --minutes $(TAPE_MINUTES) --out $(TAPE_OUT)
+	$(PY) tools/capture.py --minutes $(TAPE_MINUTES) --out $(TAPE_OUT)
 
 backtest:
-	$(PY) tools/backtest.py --tape $(TAPE) --venue $(SIGNAL_VENUE)
+	$(PY) tools/backtest.py --tape $(TAPE)
 
 diagnose:
-	$(PY) diagnose_okx.py capture.txt
+	$(PY) preflight_delta.py
 
 # The service targets wrap systemd rather than duplicating it: the unit file is
 # the definition, and these are only shorter to type.
@@ -78,13 +76,13 @@ service-install:
 	sudo ./deploy/aws_setup.sh
 
 service-start:
-	sudo systemctl start okx-feed-delta
+	sudo systemctl start delta-feed-execution
 
 service-logs:
-	journalctl -u okx-feed-delta -f
+	journalctl -u delta-feed-execution -f
 
 service-stop:
-	sudo systemctl stop okx-feed-delta
+	sudo systemctl stop delta-feed-execution
 
 clean:
 	rm -rf .venv .pytest_cache __pycache__ */__pycache__ */*/__pycache__

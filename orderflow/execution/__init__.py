@@ -1,6 +1,6 @@
-"""Execution: sizing across venues, and the Delta India order client.
+"""Execution: sizing, and the Delta India order client.
 
-    sizing       : contract arithmetic between OKX and Delta
+    sizing       : contract arithmetic for Delta
     delta_client : signed REST orders, dry-run and testnet by default
 
 Credentials are read from the environment (`DELTA_API_KEY`,
@@ -42,7 +42,6 @@ from .risk import (
 )
 from .sizing import (
     DELTA_PERP_RULES,
-    OKX_SWAP_RULES,
     SizedOrder,
     SizingError,
     VenueRules,
@@ -53,7 +52,6 @@ from .sizing import (
 __all__ = [
     # sizing
     "VenueRules",
-    "OKX_SWAP_RULES",
     "DELTA_PERP_RULES",
     "SizedOrder",
     "SizingError",

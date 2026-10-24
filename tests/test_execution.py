@@ -1,6 +1,6 @@
-"""Tests for cross-venue sizing and the Delta client. No network, no mocks of
-real code paths: the HTTP layer is replaced by an injected sender, which is a
-seam the production code itself provides.
+"""Tests for position sizing and the Delta client. No network, no mocks of real
+code paths: the HTTP layer is replaced by an injected sender, which is a seam
+the production code itself provides.
 """
 
 from __future__ import annotations
@@ -9,10 +9,9 @@ import json
 
 import pytest
 
-from orderflow import DELTA_BTCUSD, OKX_BTC_USDT_SWAP, build_default_map
+from orderflow import DELTA_BTCUSD, build_default_map
 from orderflow.execution import (
     DELTA_PERP_RULES,
-    OKX_SWAP_RULES,
     DeltaCredentials,
     DeltaOrderClient,
     Environment,
@@ -29,30 +28,23 @@ from orderflow.execution import (
 
 
 # ------------------------------------------------------------------- sizing
-class TestCrossVenueSizing:
-    def test_the_two_contracts_are_not_interchangeable(self):
-        """The whole point: 1 BTC is 100 contracts on OKX and 1000 on Delta."""
-        okx = contracts_for_base(OKX_BTC_USDT_SWAP, 1.0, OKX_SWAP_RULES)
+class TestPositionSizing:
+    def test_one_contract_is_not_one_coin(self):
+        """The whole point: 1 BTC is 1000 contracts, not 1."""
         delta = contracts_for_base(DELTA_BTCUSD, 1.0, DELTA_PERP_RULES)
-
-        assert okx.contracts == pytest.approx(100.0)
         assert delta.contracts == pytest.approx(1000.0)
-        # Copying the number across venues would be out by 10x.
-        assert okx.contracts != delta.contracts
-        assert delta.contracts / okx.contracts == pytest.approx(10.0)
+        # Sending "1" for a 1-BTC intention would be short by 1000x.
+        assert delta.contracts != 1.0
 
-    def test_both_sides_represent_the_same_exposure(self):
-        okx, delta = rebalance(
-            OKX_BTC_USDT_SWAP, DELTA_BTCUSD, 0.5, OKX_SWAP_RULES, DELTA_PERP_RULES
-        )
-        assert okx.base == pytest.approx(0.5)
-        assert delta.base == pytest.approx(0.5)
+    def test_the_round_trip_preserves_the_exposure(self):
+        order = contracts_for_base(DELTA_BTCUSD, 0.5, DELTA_PERP_RULES)
+        assert order.base == pytest.approx(0.5)
 
-    def test_okx_lot_step_is_respected(self):
-        """OKX accepts 0.01-contract steps, so a finer exposure floors to one."""
-        # 0.01535 / 0.01 = 1.535 contracts -> floors to 1.53
-        order = contracts_for_base(OKX_BTC_USDT_SWAP, 0.01535, OKX_SWAP_RULES)
-        assert order.contracts == pytest.approx(1.53)
+    def test_delta_lot_step_is_respected(self):
+        """Delta takes whole contracts, so a finer exposure floors down."""
+        # 0.01535 / 0.001 = 15.35 contracts -> floors to 15
+        order = contracts_for_base(DELTA_BTCUSD, 0.01535, DELTA_PERP_RULES)
+        assert order.contracts == pytest.approx(15.0)
         assert order.rounded is True
 
     def test_delta_floors_a_sub_contract_exposure_to_zero(self):
@@ -78,9 +70,9 @@ class TestCrossVenueSizing:
             contracts_for_base(DELTA_BTCUSD, -1.0, DELTA_PERP_RULES)
 
     def test_decimal_arithmetic_does_not_lose_a_lot(self):
-        """`0.1 // 0.01` is 9.0 on floats; Decimal must give 10 lots."""
-        order = contracts_for_base(OKX_BTC_USDT_SWAP, 0.1, OKX_SWAP_RULES)
-        assert order.contracts == pytest.approx(10.0)
+        """`0.1 // 0.001` is 99.0 on floats; Decimal must give 100 lots."""
+        order = contracts_for_base(DELTA_BTCUSD, 0.1, DELTA_PERP_RULES)
+        assert order.contracts == pytest.approx(100.0)
 
     def test_exact_exposure_is_not_flagged_rounded(self):
         order = contracts_for_base(DELTA_BTCUSD, 0.01, DELTA_PERP_RULES)
@@ -402,21 +394,28 @@ class TestClockSkew:
 
 # ------------------------------------------------------------------- wiring
 class TestWiring:
-    def test_default_map_holds_both_legs(self):
+    def test_default_map_holds_the_delta_perpetual(self):
         m = build_default_map()
-        assert len(m) == 2
-        assert m.by_symbol(  # type: ignore[attr-defined]
-            __import__("orderflow").Exchange.OKX, "BTC-USDT-SWAP"
-        ).contract_value == pytest.approx(0.01)
+        assert len(m) == 1
         assert m.by_symbol(  # type: ignore[attr-defined]
             __import__("orderflow").Exchange.DELTA, "BTCUSD"
         ).venue_id == 27
 
-    def test_sole_raises_on_ambiguous_symbol(self):
-        from orderflow import Exchange, Instrument, InstrumentMap, Segment, UnknownSymbol
+    def test_sole_resolves_the_one_instrument(self):
+        m = build_default_map()
+        assert m.sole("BTCUSD") is DELTA_BTCUSD
+
+    def test_sole_raises_on_an_unknown_symbol(self):
+        from orderflow import UnknownSymbol
+
+        with pytest.raises(UnknownSymbol):
+            build_default_map().sole("NOT-A-SYMBOL")
+
+    def test_registering_the_same_key_twice_is_refused(self):
+        """A silent overwrite would repoint sizing at a different contract."""
+        from orderflow import Exchange, Instrument, InstrumentMap, Segment
 
         m = InstrumentMap()
-        m.register(Instrument("X", Exchange.OKX, Segment.SWAP, 0.1, 0.01))
         m.register(Instrument("X", Exchange.DELTA, Segment.SWAP, 0.5, 0.001))
-        with pytest.raises(UnknownSymbol):
-            m.sole("X")
+        with pytest.raises(ValueError, match="already maps to"):
+            m.register(Instrument("X", Exchange.DELTA, Segment.FUT, 0.5, 0.5))

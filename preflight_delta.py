@@ -56,7 +56,7 @@ WARN = "WARN"
 
 def _get(url: str, headers: dict | None = None, timeout: float = 10.0):
     req = urllib.request.Request(
-        url, headers=headers or {"User-Agent": "okx-feed-delta-execution"}
+        url, headers=headers or {"User-Agent": "delta-feed-execution-execution"}
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from orderflow.feed import OkxTradeFeed
+from orderflow.feed import DeltaTradeFeed
 from orderflow.feed import base as feed_base
 
 REPO = Path(__file__).resolve().parent.parent
@@ -92,7 +92,7 @@ class ScriptedTransport:
 
 
 def feed_over(transport, **kw):
-    return OkxTradeFeed(["BTC-USDT-SWAP"], lambda: transport, **kw)
+    return DeltaTradeFeed(["BTCUSD"], lambda: transport, **kw)
 
 
 # --------------------------------------------------------------- dropped socket
@@ -155,9 +155,9 @@ def test_a_failed_reconnect_does_not_escape(no_sleep):
 
 def test_backoff_is_capped():
     """An outage must not turn into a request storm."""
-    assert OkxTradeFeed._backoff(1) == 2.0
-    assert OkxTradeFeed._backoff(5) == 30.0
-    assert OkxTradeFeed._backoff(50) == 30.0
+    assert DeltaTradeFeed._backoff(1) == 2.0
+    assert DeltaTradeFeed._backoff(5) == 30.0
+    assert DeltaTradeFeed._backoff(50) == 30.0
 
 
 def test_replay_still_ends_at_the_end_of_the_file():
@@ -171,11 +171,8 @@ def test_replay_still_ends_at_the_end_of_the_file():
 def test_transport_is_closed_even_when_a_callback_raises():
     """A crash mid-run must not leak the socket."""
     frame = json.dumps({
-        "arg": {"channel": "trades", "instId": "BTC-USDT-SWAP"},
-        "data": [{
-            "instId": "BTC-USDT-SWAP", "tradeId": "1", "px": "60000",
-            "sz": "1", "side": "buy", "ts": "1792574700000",
-        }],
+        "type": "trades", "sy": "BTCUSD", "p": "60000", "s": 1.0,
+        "r": "t", "t": 1792574700000000,
     })
     t = ScriptedTransport([frame])
 

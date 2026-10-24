@@ -1,10 +1,10 @@
 """Feed machinery shared by every venue.
 
 The transport, the dedup window, the reconnect logic and the run loop have
-nothing to do with which exchange is on the other end. They were written inside
-the OKX module and are lifted out here so a second venue does not have to copy
-them - a copy would drift, and the reconnect path is exactly the code that
-nobody notices has drifted until a socket drops in production.
+nothing to do with which exchange is on the other end. They live here rather
+than inside a venue module so that the venue module holds only the protocol: a
+copy of the reconnect path would drift, and the reconnect path is exactly the
+code nobody notices has drifted until a socket drops in production.
 
 A venue module supplies three things:
 

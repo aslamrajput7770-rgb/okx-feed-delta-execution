@@ -58,7 +58,6 @@ from .indicators import (
 )
 from .instruments import (
     DELTA_BTCUSD,
-    OKX_BTC_USDT_SWAP,
     Exchange,
     Instrument,
     InstrumentMap,
@@ -156,7 +155,6 @@ __all__ = [
     "Segment",
     "SessionKind",
     "Instrument",
-    "OKX_BTC_USDT_SWAP",
     "DELTA_BTCUSD",
     "InstrumentMap",
     "UnknownSymbol",

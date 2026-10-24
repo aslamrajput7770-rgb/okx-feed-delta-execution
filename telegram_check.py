@@ -44,7 +44,7 @@ SKIP = "SKIP"
 
 
 def _get(url: str, timeout: float = 10.0):
-    req = urllib.request.Request(url, headers={"User-Agent": "okx-feed-delta-execution"})
+    req = urllib.request.Request(url, headers={"User-Agent": "delta-feed-execution-execution"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read() or b"{}")
 
@@ -141,7 +141,7 @@ def main(argv=None) -> int:
     elif any(v == FAIL for _, v, _ in results):
         results.append(("send", SKIP, "an earlier check failed"))
     else:
-        text = args.message or "okx-feed-delta-execution: Telegram delivery confirmed."
+        text = args.message or "delta-feed-execution-execution: Telegram delivery confirmed."
         verdict, detail = check_send(creds, text)
         results.append(("send", verdict, detail))
 

@@ -386,24 +386,6 @@ class TestSupervisorLoop:
         assert s.manager.halted
         assert RiskState.load(p, s.manager.state.day_key).halted
 
-    def test_entry_gate_vetoes_the_entry(self):
-        client = RecordingClient()
-        calls = []
-        def gate(price):
-            calls.append(price)
-            return False, "basis too wide"
-        s = supervised(client, entry_gate=gate)
-        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
-        assert calls == [80000.0]
-        assert s.entries == 0
-        assert "BLOCKED" in " ".join(s.manager.log)
-
-    def test_entry_gate_allows_when_it_says_so(self):
-        client = RecordingClient()
-        s = supervised(client, entry_gate=lambda price: (True, "ok"))
-        s.on_trade(ticks([80000.0])[0], cumulative_delta=1.0)
-        assert s.entries == 1
-
     def test_hold_limit_closes_a_flat_position(self):
         client = RecordingClient()
         s = supervised(client, limits=RiskLimits(

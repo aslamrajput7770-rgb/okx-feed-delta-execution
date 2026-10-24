@@ -1,19 +1,18 @@
-"""Crypto instruments, and the contract-size arithmetic between venues.
+"""Crypto instruments, and the contract-size arithmetic.
 
-The trap this module exists to prevent: **one contract is not one coin.**
-A position of "1" on OKX and a position of "1" on Delta India are different
-amounts of bitcoin, and a system that copies a size from one venue to the
-other is out by a factor of ten without any error being raised.
+The trap this module exists to prevent: **one contract is not one coin.** A
+position of "1" on one venue and a position of "1" on another are different
+amounts of bitcoin, and a system that copies a size between them is out by a
+large factor without any error being raised.
 
-Verified against the live exchange specs (2026-10-22):
+Verified against the live exchange spec (2026-10-22):
 
-    OKX   BTC-USDT-SWAP : tick 0.1   1 contract = 0.01 BTC   settles USDT
-    Delta BTCUSD        : tick 0.5   1 contract = 0.001 BTC  settles USD
-                          (id 27 in production, id 84 on testnet)
+    Delta BTCUSD : tick 0.5   1 contract = 0.001 BTC  settles USD
+                   (id 27 in production, id 84 on testnet)
 
 So `size` is always in *contracts* and is only meaningful together with the
 instrument's `contract_value`. Convert through `contracts_for_base()` rather
-than copying a number between venues.
+than copying a number between instruments.
 """
 
 from __future__ import annotations
@@ -25,8 +24,7 @@ from .ticks import TickGrid
 
 
 class Exchange(str, Enum):
-    OKX = "OKX"  # global venue, the signal source
-    DELTA = "DELTA"  # Delta Exchange India, the execution venue
+    DELTA = "DELTA"  # Delta Exchange India, the signal source and the venue
 
 
 class Segment(str, Enum):
@@ -80,8 +78,8 @@ class Instrument:
     def contracts_for_base(self, base: float) -> float:
         """Contracts needed to express a base-currency amount.
 
-        Not rounded here: rounding is a venue rule (OKX lotSz, Delta integer
-        contracts) and belongs to the execution client, which knows the venue.
+        Not rounded here: rounding is a venue rule (Delta takes whole contracts)
+        and belongs to the execution client, which knows the venue.
         """
         return base / self.contract_value
 
@@ -94,15 +92,6 @@ class Instrument:
 # Verified venue specs. Refresh from the venue at startup; these are the
 # defaults the tests and the offline path use.
 # --------------------------------------------------------------------------
-OKX_BTC_USDT_SWAP = Instrument(
-    symbol="BTC-USDT-SWAP",
-    exchange=Exchange.OKX,
-    segment=Segment.SWAP,
-    tick_size=0.1,
-    contract_value=0.01,  # 1 contract = 0.01 BTC
-    settle_ccy="USDT",
-)
-
 DELTA_BTCUSD = Instrument(
     symbol="BTCUSD",
     exchange=Exchange.DELTA,
@@ -124,8 +113,8 @@ class InstrumentMap:
     """Maps venue symbols onto `Instrument`, and finds the hedge leg.
 
     Keyed on `(exchange, symbol)`. A bare-symbol lookup is a latent collision:
-    `BTCUSD` exists on Delta and near-identical tickers exist elsewhere, and the
-    two are different contracts with different sizes.
+    the same ticker can exist on more than one venue and name different
+    contracts with different sizes.
     """
 
     _by_key: dict[tuple[Exchange, str], Instrument] = field(default_factory=dict)
@@ -172,8 +161,7 @@ class InstrumentMap:
 
 
 def build_default_map() -> InstrumentMap:
-    """The verified OKX/Delat pair, ready to use."""
+    """The verified Delta instrument, ready to use."""
     m = InstrumentMap()
-    m.register(OKX_BTC_USDT_SWAP)
     m.register(DELTA_BTCUSD)
     return m

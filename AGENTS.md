@@ -6,19 +6,22 @@ needs no briefing: everything required to run, test and deploy is here.
 ## Start here
 
 You are working on an order-flow engine. It reads perpetual trade flow and places
-orders on **Delta Exchange India**. The signal is read from **Delta India** by
-default - the same venue the order lands on, so there is no basis between signal
-and fill. `--venue okx` reads **OKX** instead, which is the cross-venue mode.
+orders on **Delta Exchange India**. The signal is read from **Delta India** too -
+the same venue the order lands on - so there is no basis between signal and fill,
+and there is no second book to reconcile against. Delta is the only feed; the
+OKX path was removed.
 
-The repository, the service user and the systemd unit are still named
-`okx-feed-delta*`. That is historical - OKX was the original signal source - and
-it is deliberately not renamed: those names are a deployment identity, and
-changing them would break an install for no functional gain.
+The repository is still named `okx-feed-delta-execution`. That is historical -
+OKX was the original signal source - and it is deliberately not renamed: the
+repository name is a remote identity, and renaming it would break existing
+clones and remote URLs for no functional gain. Everything *inside* the
+repository is named for Delta: the systemd unit is `delta-feed-execution.service`
+and the service user is `deltafeed`.
 
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
-   `python3 -m pytest tests -q` -> 275 passed
+   `python3 -m pytest tests -q` -> 309 passed
 2. Read `config/delta.env` for the venue, the credentials and the product notes.
    If the file is absent, the credentials come from the environment instead
    (`DELTA_API_KEY`, `DELTA_API_SECRET`).
@@ -40,25 +43,22 @@ venue name carried through so a notice says which book the signal came from; the
 feed runs in a single pass (it used to run twice, and the second pass - the one
 that trades - saw nothing); a dropped socket reconnects instead of raising out
 of `run()`; SIGTERM is handled like Ctrl-C, so `systemctl stop` closes the
-position and saves the daily counter. Delta India is the signal source by default
-and OKX is the opt-in cross-venue mode. `deploy/aws_setup.sh` installs the
-project as a systemd unit, and the unit file is in the repository. 353 tests
-pass.
+position and saves the daily counter. Delta India is the only signal source and
+the only execution venue. `deploy/aws_setup.sh` installs the project as a systemd
+unit, and the unit file is in the repository. 309 tests pass.
 
 **Verified, not assumed.** The Delta feed is genuinely live: a one-minute run
 against `wss://public-socket.india.delta.exchange` delivered 52 trades and 30
 control frames with `duplicates=0` and `errors=0`, against a REST ticker read
-that agreed on price. The OKX feed was verified the same way and its frames
-matched `https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP` to within
-a second; that path still works and is now opt-in. Paper mode runs the real
-supervisor with `execute=False`, so it produces the entries, exits and
-notifications a live run would, minus the request.
+that agreed on price. Paper mode runs the real supervisor with `execute=False`,
+so it produces the entries, exits and notifications a live run would, minus the
+request.
 
 **Not done, and the reason matters.**
 
 1. **The installer has been run, but not on the target host.** `deploy/aws_setup.sh`
    has now been executed end to end on a clean Debian container: it created the
-   service user, installed the code, ran the suite as that user (353 passed),
+   service user, installed the code, ran the suite as that user (309 passed),
    proved `state/` is writable by it, wrote both env files and installed the
    unit. That run is what found the two defects described below. What has *not*
    happened is an install on the actual EC2 instance, and no systemd unit has
@@ -69,8 +69,9 @@ notifications a live run would, minus the request.
    (`tools/capture.py`, or `make tape`) that has to finish before the same-venue
    numbers are real. The backtest prints a PARTIAL banner while it is short, and
    marks `partial` in its JSON, so an interim read cannot be mistaken for a day.
-   Until then `docs/backtest.md` carries OKX cross-venue numbers with that said
-   plainly.
+   Until then `docs/backtest.md` carries the older cross-venue numbers, labelled
+   as such and noted as no longer reproducible, because the fetcher that produced
+   them was removed with the OKX path.
 3. **The Delta credentials must be rotated.** They are committed in
    `config/delta.env` at the owner's explicit instruction. Do not undo that, but
    do tell the owner to rotate the key and the secret; a committed credential is
@@ -126,8 +127,8 @@ without warning.
     user     ec2-user
     OS       Amazon Linux 2023
     python   /usr/bin/python3.14   (3.10+ is required, see below)
-    repo     ~/okx-feed-delta-execution
-    venv     ~/okx-feed-delta-execution/.venv
+    repo     ~/delta-feed-execution-execution
+    venv     ~/delta-feed-execution-execution/.venv
     pulls    read-only deploy key at ~/.ssh/deploy_key, alias github-deploy
 
     ~/.ssh/config:
@@ -137,7 +138,7 @@ without warning.
         IdentityFile ~/.ssh/deploy_key
         IdentitiesOnly yes
 
-    git remote: git@github-deploy:aslamrajput7770-rgb/okx-feed-delta-execution.git
+    git remote: git@github-deploy:aslamrajput7770-rgb/delta-feed-execution-execution.git
 
 The deploy key is read-only and scoped to this repository alone, so a leaked
 key grants no write access and reaches nothing else.
@@ -169,7 +170,7 @@ The key is IP-locked. A request from any other address returns
 ## Commands
 
 ```bash
-python3 -m pytest tests -q                      # 353 tests, offline, ~1.3s
+python3 -m pytest tests -q                      # 309 tests, offline, ~1.1s
 python3 preflight_delta.py                      # testnet, read-only
 python3 preflight_delta.py --live               # production, read-only
 python3 telegram_check.py                       # bot can reach the chat, sends one message
@@ -178,8 +179,6 @@ python3 telegram_check.py                       # bot can reach the chat, sends 
 DELTA_ORDER_SIZE=0.001 ./deploy/run_live.sh 5   # real orders, needs the size
 python3 live_feed.py --dry-run                  # offline synthetic tape, no socket
 python3 live_feed.py --minutes 1 --record c.txt # live Delta feed, no orders
-python3 live_feed.py --venue okx --minutes 1    # cross-venue mode (OKX signal)
-python3 diagnose_okx.py c.txt                   # OKX side-mapping verdict
 python3 live_feed.py --replay c.txt             # offline replay
 ```
 
@@ -198,29 +197,27 @@ that run in production rather than a copy of them.
 its REST `trades` endpoint returns the latest 50 prints and ignores `start` and
 `end` (tried in both seconds and microseconds), its only historical endpoint is
 candles, and candles carry no aggressor split so the signal cannot be rebuilt
-from them. The docs scope cursor pagination to products, orders and fills. OKX
-does have pageable history, and `tools/fetch_okx.py` uses it - but that is the
-cross-venue mode now.
+from them. The docs scope cursor pagination to products, orders and fills. So a
+tape is recorded while the market happens, never downloaded.
 
 ```bash
 make tape                                       # 1440 min = 1 day, Delta, live
-python3 tools/capture.py --venue delta --minutes 1440 --out tape.txt
+python3 tools/capture.py --minutes 1440 --out tape.txt
 python3 tools/backtest.py --tape tape.txt                    # shipped rules
 python3 tools/backtest.py --tape tape.txt --grid-stop 0.25:3.0:0.25
 python3 tools/backtest.py --tape tape.txt --verify-delta     # slow, self-checks
-python3 tools/backtest.py --tape tape.txt --venue okx        # OKX-recorded tape
-python3 tools/fetch_okx.py --hours 6 --out tape_okx.txt      # OKX history
 ```
 
-`--venue` selects the decoder and must match the tape. A Delta tape fed to the
-OKX decoder decodes to zero prints rather than to garbage, and the tests pin
-that, because a silent zero is the failure mode to catch.
+A capture **resumes** if the target already holds a tape, rather than
+truncating it, and records only the remainder of the requested window. A
+container restart used to cost the whole recording, and Delta has no history to
+re-fetch it from. `--no-resume` starts fresh when that is what you want.
 
 Fills are simulated at the print price plus cost; the strategy, risk ladder and
 exit logic are the shipped code paths. See `docs/backtest.md` for the results.
 
-Note that with `--venue delta` the basis is zero by construction: the signal
-price and the fill price are the same price. That is the point of the default.
+The signal price and the fill price are the same price, because both come from
+Delta. That is the point of reading and trading one venue.
 
 ## As a service
 
@@ -231,15 +228,15 @@ the clone is the deployment.
 
 ```bash
 sudo ./deploy/aws_setup.sh          # install; does not start, does not go live
-sudo systemctl start okx-feed-delta
-journalctl -u okx-feed-delta -f
+sudo systemctl start delta-feed-execution
+journalctl -u delta-feed-execution -f
 ```
 
 Two environment files, so the one edited to change behaviour is not the one
 holding a credential:
 
-    /etc/okx-feed-delta/env          DELTA_* and TELEGRAM_*, mode 600
-    /etc/okx-feed-delta/service.env  SERVICE_MODE and timings, mode 600
+    /etc/delta-feed-execution/env          DELTA_* and TELEGRAM_*, mode 600
+    /etc/delta-feed-execution/service.env  SERVICE_MODE and timings, mode 600
 
 `SERVICE_MODE=paper` is the installed default. `SERVICE_MODE=live` additionally
 requires `DELTA_ORDER_SIZE` and `I_KNOW_THIS_IS_LIVE=1` in `service.env`, so
@@ -261,9 +258,6 @@ abandoned-position case the SIGTERM handler exists to prevent.
 The script does not create infrastructure. EC2 instances, security groups and
 key pairs belong in the account's own IaC; a setup script that can create
 infrastructure is one that can delete it.
-
-`diagnose_okx.py` exits non-zero when the verdict is not `OK`. It is a check,
-not a report.
 
 `run_paper.sh` never passes `--execute`. `run_live.sh` refuses to start without
 an explicit `DELTA_ORDER_SIZE` and has no default. The split is deliberate:
@@ -307,15 +301,6 @@ a bare invocation from hanging on a socket that never closes.
 `--i-know-this-is-live`. The guard is in the program, not only in `run_live.sh`,
 because calling `live_feed.py` directly must not be a way around it.
 
-**`--basis-warn` refuses, and it is wired.** It guards the cross-venue mode:
-OKX and Delta are different instruments, so the spread between them is risk the
-delta signal does not see. With `--venue delta` there is no second venue and the
-gate is not installed, rather than installed and trivially passing.
-The guard reads the Delta mark price from the public ticker and returns non-zero
-when `|basis|` exceeds the limit; on a live order it also refuses when the basis
-cannot be read at all. It used to be a dead function with a flag that claimed to
-refuse and did nothing.
-
 **Zero cumulative delta is no signal.** `order_side(0.0)` returns `None` and no
 order is sent. It used to fall through to `sell`.
 
@@ -323,18 +308,15 @@ order is sent. It used to fall through to `sell`.
 
 These are load-bearing. Each one has a silent failure mode if broken.
 
-**The aggressor side is never inferred.** Both venues report it, in different
-vocabularies. OKX reports the taker side: `buy` = taker bought = volume on the
-ask = `Side.BUY`. Delta reports the buyer's role: `r="t"` = the buyer was the
-taker = the aggressor bought = `Side.BUY`; `r="m"` = the buyer was a maker = the
-aggressor sold = `Side.SELL`. Inverting either one inverts every signal while
-leaving the footprint looking correct.
-`tests/test_okx_protocol.py::TestTakerSideMapping` and
-`tests/test_delta_protocol.py` catch it.
+**The aggressor side is never inferred.** Delta reports the buyer's role:
+`r="t"` = the buyer was the taker = the aggressor bought = `Side.BUY`; `r="m"` =
+the buyer was a maker = the aggressor sold = `Side.SELL`. Inverting it inverts
+every signal while leaving the footprint looking correct.
+`tests/test_delta_protocol.py` catches it.
 
 **A dropped socket is reconnected, never heartbeated forever.** A dead socket
 and a quiet one both make `recv` return nothing, so the loop cannot tell them
-apart from the return value alone. `_LiveOkxTransport.dead` is set when `recv`
+apart from the return value alone. `_LiveTransport.dead` is set when `recv`
 raises anything other than a timeout, and `_heartbeat()` is guarded so a failed
 ping reconnects instead of raising out of `run()`. A heartbeat that *succeeds*
 proves nothing — a half-open TCP socket accepts the write — so silence past
@@ -358,12 +340,12 @@ within an instrument. A reconnect replays trades and double-counts volume.
 The old feed returned True for every non-binary frame, which on a JSON feed
 drops every tick. Do not "fix" it by inverting the test.
 
-**A size is never a bare number.** `SizedOrder` carries the instrument. OKX
-contracts are 0.01 BTC, Delta contracts are 0.001 BTC. Use
-`contracts_for_base()`, never arithmetic on a size from the other venue.
+**A size is never a bare number.** `SizedOrder` carries the instrument. A Delta
+contract is 0.001 BTC. Use `contracts_for_base()`, never bare arithmetic that
+assumes a contract is a coin.
 
 **Rounding is always down.** An over-sized leg is worse than an under-sized one.
-`_floor_to_step` uses `Decimal`: `0.1 // 0.01` is 9.0 on floats.
+`_floor_to_step` uses `Decimal`: `0.1 // 0.001` is 99.0 on floats.
 
 **The execution leg is resolved by symbol, never by a hardcoded product id.**
 Product ids are not portable between environments: production carries the BTCUSD
@@ -425,11 +407,6 @@ ones with `{"error":{"code":"invalid_contract"}}`, which is also what a
 non-existent symbol returns. Consequence: a Delta tape can only be **recorded
 live**, and a backtest cannot cover a window nobody captured.
 
-**OKX's `history-trades` `after` takes a tradeId, not a timestamp.** A timestamp
-is silently ignored and returns the newest page, so the fetch looks like it is
-working and yields one page. This is OKX-only now, but it is the reason
-`tools/fetch_okx.py` has a tradeId search at all.
-
 **The signature is correct and accepted.** `preflight_delta.py --live` reports
 `signature PASS`: the venue accepted the signature on `GET /v2/profile`, and the
 wallet read returns the account's assets. The earlier suspicion that Delta's
@@ -472,10 +449,9 @@ usable for the preflight without Trading.
 
 ## Known gaps
 
-**No hedging leg.** Nothing is traded on the signal venue. In the default
-`--venue delta` mode there is no basis to carry, because the signal and the fill
-are the same book. In `--venue okx` mode the position is directional and carries
-basis risk, and the docs and the README say so.
+**No hedging leg.** Nothing is traded on the signal venue. There is no basis to
+carry, because the signal and the fill are the same book - that is the reason the
+system reads and trades one venue.
 
 **No persistence.** Sessions are in memory. A restart loses the day's profile.
 
@@ -514,10 +490,9 @@ whenever the signal still points the same way. Treat it as a plumbing
 demonstration with working guards, not a tuned strategy.
 
 **One signal, one position.** The supervisor holds at most one position at a
-time, checking the exit before considering an entry. The `--basis-warn` guard,
-the mainnet confirmation flag and the zero-delta check bound what this can do,
-and the risk limits cap it, but none of them is a claim that the signal has an
-edge.
+time, checking the exit before considering an entry. The mainnet confirmation
+flag and the zero-delta check bound what this can do, and the risk limits cap it,
+but none of them is a claim that the signal has an edge.
 
 **No cooldown between an exit and the next entry.** The signal is still positive
 after a stop loss fires, so the next tick re-enters. A run can therefore walk
@@ -529,8 +504,8 @@ price is the last trade price on the signal venue, and no fill, fee or slippage
 from the execution venue enters the number. It is the price the signal was
 computed from, not the price the position would have been closed at, so
 `realized pnl` is an upper bound at best. Reading the real fill requires a
-position query this repository does not make. With `--venue delta` the two
-prices are at least from the same book.
+position query this repository does not make. The two prices are at least from
+the same book.
 
 **The signal has no demonstrated edge.** A backtest exists now
 (`tools/backtest.py`), it runs the shipped rules, and on every tape measured it
@@ -551,7 +526,6 @@ while the process was running. There is no way to go back and fill a gap.
 - Do not add geo-restriction bypass logic of any kind.
 - Do not add an `api_secret` constructor argument "for convenience".
 - Do not default `dry_run` to False.
-- Do not make `diagnose_okx.py` exit 0 on a `SUSPECT` or `FAIL` verdict.
 - Do not commit a private key, and do not ask for one in chat.
 - Do not commit a Telegram bot token or chat id either. They go in the
   environment like the Delta pair; a committed token is a token anyone can post
