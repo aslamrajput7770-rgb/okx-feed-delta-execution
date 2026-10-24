@@ -17,6 +17,7 @@ and `live_feed.py --replay` can re-run the session it recorded.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import signal
 import sys
@@ -92,14 +93,14 @@ class LiveTransport:
                 self._ws = None
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="capture live trade prints to a tape")
     ap.add_argument("--venue", choices=sorted(VENUES), default="delta")
     ap.add_argument("--symbol", default=None, help="default: BTCUSD on delta, BTC-USDT-SWAP on okx")
     ap.add_argument("--minutes", type=float, default=60.0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--uri", default=None, help="override the venue socket")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     uri, feed_cls = VENUES[args.venue]
     symbol = args.symbol or ("BTCUSD" if args.venue == "delta" else "BTC-USDT-SWAP")
@@ -118,6 +119,21 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     written = 0
+
+    # One writer per tape. The file is opened "w", so a second capture truncates
+    # the first one's work and then interleaves with it - the two together
+    # produce a tape whose prints are neither complete nor in order, and nothing
+    # in the output says so. Taking an exclusive lock before the truncate turns
+    # that into a refusal. A 24-hour recording is far too expensive to lose to a
+    # second invocation.
+    lock_path = out.with_suffix(out.suffix + ".lock")
+    lock_fh = lock_path.open("w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(f"another capture is already writing {out} "
+              f"(lock {lock_path}). Refusing to truncate it.", file=sys.stderr)
+        return 1
 
     print(f"capturing {symbol} from {uri} for {args.minutes:g} min -> {out}")
 
@@ -144,6 +160,9 @@ def main() -> int:
             reconnect_after_seconds=20.0,
         )
         fh.flush()
+
+    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    lock_fh.close()
 
     elapsed = time.monotonic() - started
     print(f"wrote {written} frames, {stats.trades} prints in {elapsed:.0f}s")

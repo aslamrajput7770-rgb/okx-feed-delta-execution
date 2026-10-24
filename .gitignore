@@ -17,6 +17,7 @@ capture*.txt
 *.capture
 # Replay tapes, whether downloaded from OKX or recorded live from Delta.
 tape*.txt
+*.lock
 recordings/
 reports/
 
