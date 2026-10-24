@@ -42,8 +42,8 @@ def frame(rows, inst="BTCUSD"):
             "p": str(r["px"]),
             "s": r["sz"],
             "r": _ROLE.get(r["side"], r["side"]),
-            # Delta's trade time is microseconds; the helper takes milliseconds
-            # so the tests read in the same unit the engine uses.
+            # The helper takes milliseconds, like the engine; Delta's `t` is
+            # microseconds, so the factor is 1000.
             "t": int(r["ts"]) * 1000 + int(r["trade_id"]),
             "ts": int(r["ts"]) * 1000,
         }
@@ -326,3 +326,45 @@ class TestReportedNumbers:
         backtest.run_backtest(events, RiskLimits(), 0.001, backtest.Costs(),
                               basis_mode=False, use_gate=False)
         assert not (tmp_path / "state").exists()
+
+
+class TestAPartialTapeIsLabelled:
+    """A recording is only as long as the process that made it.
+
+    Delta keeps no trade-print history, so a tape is captured live and can be
+    any length. Reading a 30-minute capture as a full-day result is the mistake
+    this catches, and it is silent without the label.
+    """
+
+    def _tape(self, tmp_path, hours, n=20):
+        """A tape whose first and last prints are exactly `hours` apart."""
+        rows = []
+        step_ms = hours * 3_600_000 / (n - 1)
+        for i in range(n):
+            rows.append(row(i + 1, 100.0 + i, 1.0, "buy",
+                            1_700_000_000_000 + round(i * step_ms)))
+        return write_tape(tmp_path / "t.txt", rows)
+
+    def test_a_short_tape_warns(self, tmp_path, capsys):
+        p = self._tape(tmp_path, 0.5)
+        backtest.main(["--tape", str(p)])
+        err = capsys.readouterr().err
+        assert "PARTIAL" in err
+        assert "full-day" in err
+
+    def test_a_full_tape_does_not_warn(self, tmp_path, capsys):
+        p = self._tape(tmp_path, 25.0)
+        backtest.main(["--tape", str(p)])
+        assert "PARTIAL" not in capsys.readouterr().err
+
+    def test_the_json_report_marks_partiality(self, tmp_path):
+        p = self._tape(tmp_path, 0.5)
+        out = tmp_path / "r.json"
+        backtest.main(["--tape", str(p), "--json-out", str(out)])
+        assert json.loads(out.read_text())[0]["partial"] is True
+
+    def test_the_window_can_be_stated(self, tmp_path, capsys):
+        """A 2-hour capture is complete for a 2-hour expectation."""
+        p = self._tape(tmp_path, 2.0)
+        backtest.main(["--tape", str(p), "--expect-hours", "2"])
+        assert "PARTIAL" not in capsys.readouterr().err

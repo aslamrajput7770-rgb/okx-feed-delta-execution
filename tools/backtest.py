@@ -504,6 +504,7 @@ def report(r: Result, limits: RiskLimits, order_size_base: float, costs: Costs, 
     return {
         "label": label,
         "hours": round(hours, 4),
+        "partial": hours < 24.0 * 0.99,
         "prints": r.prints,
         "bars": r.bars,
         "trades": len(r.trades),
@@ -537,11 +538,14 @@ def _parse_triple(s: str) -> tuple[float, float, float]:
     return a, b, c
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Backtest the shipped signal loop over a tape.")
     ap.add_argument("--tape", type=Path, required=True)
     ap.add_argument("--venue", choices=sorted(VENUES), default="delta",
                     help="which venue recorded the tape (default: delta)")
+    ap.add_argument("--expect-hours", type=float, default=24.0,
+                    help="warn when the tape is shorter than this; a partial "
+                         "capture read as a full-day result is the trap")
     ap.add_argument("--stop-loss", type=float, default=1.0, help="percent, 0 disables")
     ap.add_argument("--take-profit", type=float, default=2.0, help="percent, 0 disables")
     ap.add_argument("--max-hold", type=float, default=3600.0, help="seconds, 0 disables")
@@ -558,7 +562,7 @@ def main() -> int:
     ap.add_argument("--verify-delta", action="store_true",
                     help="cross-check the carried delta against the chart every print (slow)")
     ap.add_argument("--json-out", type=Path, default=None)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not args.tape.exists():
         print(f"no such tape: {args.tape}", file=sys.stderr)
@@ -570,6 +574,17 @@ def main() -> int:
         return 1
     span_h = (events[-1].ts_ms - events[0].ts_ms) / 3_600_000.0
     print(f"tape: {args.tape}  [{args.venue}]  {len(events):,} prints over {span_h:.2f} h")
+
+    # A recording is only as long as the process that made it. Every number below
+    # is over the window that exists, not the window that was intended, and a
+    # partial capture read as a day is how a result gets quoted for a day it
+    # never saw. Said out loud rather than refused: a partial read is useful.
+    partial = args.expect_hours > 0 and span_h < args.expect_hours * 0.99
+    if partial:
+        print(f"  !! PARTIAL: {span_h:.2f} h of an expected {args.expect_hours:g} h "
+              f"({100 * span_h / args.expect_hours:.1f}%).", file=sys.stderr)
+        print("     Every figure below covers this window only. Do not quote it "
+              "as a full-day result.", file=sys.stderr)
 
     costs = Costs(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps, basis_bps=args.basis_bps)
     results = []
