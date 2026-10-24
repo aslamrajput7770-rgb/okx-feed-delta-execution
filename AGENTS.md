@@ -10,6 +10,11 @@ orders on **Delta Exchange India**. The signal is read from **Delta India** by
 default - the same venue the order lands on, so there is no basis between signal
 and fill. `--venue okx` reads **OKX** instead, which is the cross-venue mode.
 
+The repository, the service user and the systemd unit are still named
+`okx-feed-delta*`. That is historical - OKX was the original signal source - and
+it is deliberately not renamed: those names are a deployment identity, and
+changing them would break an install for no functional gain.
+
 Order of operations for a new session:
 
 1. Run the tests. They are offline and take under a second.
