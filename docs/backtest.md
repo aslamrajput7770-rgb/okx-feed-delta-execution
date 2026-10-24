@@ -102,10 +102,11 @@ who was aggressive, not of where price is going next.
 - **Fills are simulated.** A print at price P is treated as fillable at P plus
   slippage. Real fills queue, and a 30-second bar's worth of prints is not the
   same as resting liquidity.
-- **No basis is charged by default.** In production the signal is read on OKX
-  and the order goes to Delta, where the price differs. The `--basis-bps` flag
-  charges it on entry; every run above is at zero, so the real result is *worse*
-  than shown, not better.
+- **No basis is charged, and in the default mode there is none to charge.** These
+  runs read the signal on OKX and filled at Delta, where the price differs, so
+  they *understate* the cost by the basis. The `--basis-bps` flag charges it on
+  entry and every run above is at zero. A same-venue Delta run has no basis by
+  construction, which is part of why Delta is now the default.
 - **Short windows.** 23 hours across three days is not a regime. It is enough to
   see that the edge is absent in these windows, not enough to bound how bad it
   can be. Two of the three days are one-sided in the same direction.

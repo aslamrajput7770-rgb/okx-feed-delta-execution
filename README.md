@@ -13,7 +13,7 @@ On a machine with nothing but a shell and this repository:
     ./bootstrap.sh
 
 That finds or installs a Python 3.10+ interpreter, creates `.venv`, installs the
-dependencies, runs the offline suite (275 tests), and then runs the read-only
+dependencies, runs the offline suite (343 tests), and then runs the read-only
 venue preflight. It sends no orders.
 
 Then:
@@ -184,23 +184,34 @@ old default of `0` made a bare `python3 live_feed.py` hang forever. Use
 `--dry-run` for an offline check: it replays a synthetic tape and opens no
 socket at all.
 
-`--basis-warn` refuses to place an order when the OKX/Delta basis exceeds the
-given percentage, and refuses on a live order when the basis cannot be read. The
-two venues are different instruments, so the spread between them is a real risk
-that no delta signal accounts for.
+`--basis-warn` refuses to place an order when the signal/Delta basis exceeds the
+given percentage, and refuses on a live order when the basis cannot be read. It
+applies to the cross-venue mode only: with `--venue delta` the signal is read on
+the venue the order goes to, so the basis is zero by construction and the guard
+is skipped rather than passing trivially.
 
 ## Two things that were silent failures upstream
 
 Both are pinned by tests, and both are worth understanding before changing the
 feed.
 
-**1. The taker side must not be inverted.** OKX reports the taker side of each
-print. `buy` means the taker bought, so the offer was lifted and volume belongs
-on the ask. An inverted mapping produces a footprint that renders perfectly with
-a plausible delta on every bar — and the sign of every signal is wrong.
-`tests/test_okx_protocol.py::TestTakerSideMapping` asserts that a buy print makes
-bar delta positive, which is the assertion that catches it.
-`diagnose_okx.py` re-checks it against a recording.
+**1. The aggressor side must not be inverted.** Both venues report the side, in
+different vocabularies, and both are easy to read backwards.
+
+OKX reports the **taker** side: `buy` means the taker bought, so the offer was
+lifted and volume belongs on the ask.
+
+Delta reports the **buyer's role**: `r="t"` means the buyer was the taker, so the
+aggressor bought; `r="m"` means the buyer was a maker, so the aggressor sold. It
+is the buyer's role, not the taker's side, and reading it as the taker's side
+inverts every print.
+
+Either inversion produces a footprint that renders perfectly with a plausible
+delta on every bar — and the sign of every signal is wrong.
+`tests/test_okx_protocol.py::TestTakerSideMapping` and
+`tests/test_delta_protocol.py` assert that a buy print makes bar delta positive,
+which is the assertion that catches it. `diagnose_okx.py` re-checks the OKX side
+against a recording.
 
 **2. Deduplication is on `tradeId`.** A reconnect replays trades already seen.
 Without dedup, volume is double-counted at the reconnect boundary and nothing
@@ -285,20 +296,19 @@ MIT, inherited from the original repository.
 
 ## Running it
 
-Paper mode takes the OKX feed and reports the order it would send, without
+Paper mode takes the signal feed and reports the order it would send, without
 sending one:
 
     ./deploy/run_paper.sh 5          # five minutes, live host, no orders
 
 Output:
 
-    venue      : OKX wss://ws.okx.com:8443/ws/v5/public
+    venue      : DELTA wss://public-socket.india.delta.exchange
     execution  : Delta live (DRY RUN, no orders)
     frames=4271 trades=4238 duplicates=0 control=33 errors=0
     bars=11 volume=17288.7 cum_delta=5119.94
     execution leg: id 27 BTCUSD tick 0.5 1 contract = 0.001 base
     signal       : cumulative delta 5119.94 -> buy
-    basis        : OKX 81867.1 vs Delta 81859.7 = -0.009%
     order size   : DELTA:BTCUSD 1 contracts = 0.001 base
     dry run      : would send buy 1 contract(s) of product_id=27. No request sent.
 
