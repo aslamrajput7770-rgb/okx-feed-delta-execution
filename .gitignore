@@ -1,36 +1,36 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-venv/
-*.egg-info/
-
 # Secrets. Credentials live in the environment, never in the repo.
 .env
 .env.*
-*.key
-*.pem
 secrets.json
 
-# Local captures and generated reports.
-capture*.txt
-*.capture
-# Replay tapes, whether downloaded from OKX or recorded live from Delta.
-tape*.txt
-*.lock
-recordings/
-reports/
+# Local credential files, see config/delta.env
+config/delta.local.env
+config/telegram.local.env
+telegram.env
+*.key
+*.pem
 
 # Runtime state: the persisted daily loss counter. Per-host, not per-repo.
 state/
 
-# Local credential file, see config/delta.env
-config/delta.local.env
+# Replay tapes, whether downloaded from OKX or recorded live from Delta.
+tape*.txt
+capture*.txt
+*.capture
+recordings/
 
-# Daily loss counter written by the risk layer at runtime.
-state/
+# Local captures and generated reports.
+reports/
+*.log
+tape_run.log
 
-# Telegram bot credentials, if ever kept in a file. They belong in the
-# environment (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID), never in the repository.
-config/telegram.local.env
-telegram.env
+# A live capture holds a lock on its output so two writers cannot share it.
+*.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/

@@ -57,3 +57,53 @@ class TestOneWriterPerTape:
         fcntl.flock(again, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(again, fcntl.LOCK_UN)
         again.close()
+
+
+class TestTheTapeSpanIsMeasuredNotCounted:
+    """A resume must record the rest of the window, not another full one.
+
+    `--minutes 1440` means "cover a day". Counting frames cannot answer how much
+    time is covered, because the venue is quiet at some hours and busy at
+    others; only the venue's own timestamps can. Getting this wrong doubles the
+    requested window, quietly.
+    """
+
+    def _tape(self, path, start_us, spans_us):
+        lines = []
+        for i, span in enumerate(spans_us):
+            lines.append(
+                'txt:{"p":"80000.0","r":"t","s":1.0,"sy":"BTCUSD",'
+                f'"t":{start_us + span},"type":"trades"}}'
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_span_comes_from_the_timestamps(self, tmp_path):
+        p = self._tape(tmp_path / "t.txt", 1_792_805_400_000_000,
+                       [0, 60_000_000, 3_600_000_000])
+        assert capture._tape_seconds(p) == pytest.approx(3600.0)
+
+    def test_an_empty_tape_covers_nothing(self, tmp_path):
+        p = tmp_path / "t.txt"
+        p.write_text("", encoding="utf-8")
+        assert capture._tape_seconds(p) == 0.0
+
+    def test_control_frames_do_not_inflate_the_span(self, tmp_path):
+        """Heartbeats carry no `t`, so they cannot be mistaken for prints."""
+        p = tmp_path / "t.txt"
+        p.write_text(
+            'txt:{"type":"heartbeat"}\n'
+            'txt:{"p":"80000.0","r":"t","s":1.0,"t":1792805400000000,"type":"trades"}\n'
+            'txt:{"type":"subscriptions"}\n'
+            'txt:{"p":"80001.0","r":"t","s":1.0,"t":1792805460000000,"type":"trades"}\n',
+            encoding="utf-8",
+        )
+        assert capture._tape_seconds(p) == pytest.approx(60.0)
+
+    def test_a_covered_tape_records_nothing(self, tmp_path, capsys):
+        """No socket is opened on this path, which is why it is testable."""
+        p = self._tape(tmp_path / "t.txt", 1_792_805_400_000_000,
+                       [0, 7_200_000_000])  # 2 h
+        rc = capture.main(["--venue", "delta", "--minutes", "60", "--out", str(p)])
+        assert rc == 0
+        assert "nothing to record" in capsys.readouterr().out

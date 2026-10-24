@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import re
 import signal
 import sys
 import time
@@ -40,6 +41,31 @@ VENUES = {
     "delta": (DELTA_PUBLIC_WS, DeltaTradeFeed),
     "okx": (PUBLIC_WS, OkxTradeFeed),
 }
+
+
+TRADE_TIME = re.compile(rb'"?t"?\s*:\s*(\d{10,})')
+
+
+def _tape_seconds(path: Path) -> float:
+    """How much wall-clock time a tape already covers, in seconds.
+
+    Read from the venue's own timestamps rather than the line count, because a
+    tape that lost time to a disconnect still covers what it covers. The first
+    and last prints are enough - frames are appended in order, and `load_tape`
+    sorts anyway.
+    """
+    first = last = None
+    with path.open("rb") as fh:
+        for line in fh:
+            m = TRADE_TIME.search(line)
+            if m:
+                ts = int(m.group(1)) / 1_000_000.0  # venue times are microseconds
+                if first is None:
+                    first = ts
+                last = ts
+    if first is None or last is None:
+        return 0.0
+    return max(0.0, last - first)
 
 
 class LiveTransport:
@@ -100,6 +126,8 @@ def main(argv=None) -> int:
     ap.add_argument("--minutes", type=float, default=60.0)
     ap.add_argument("--out", required=True)
     ap.add_argument("--uri", default=None, help="override the venue socket")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="start a fresh tape even if --out already has one")
     args = ap.parse_args(argv)
 
     uri, feed_cls = VENUES[args.venue]
@@ -135,9 +163,36 @@ def main(argv=None) -> int:
               f"(lock {lock_path}). Refusing to truncate it.", file=sys.stderr)
         return 1
 
-    print(f"capturing {symbol} from {uri} for {args.minutes:g} min -> {out}")
+    # Resume rather than truncate when the target already holds a tape.
+    #
+    # A 24-hour capture is only as durable as the machine running it, and a
+    # container restart costs the whole recording - Delta keeps no history, so
+    # there is nothing to re-fetch. The tape is append-only and `load_tape`
+    # deduplicates on trade id, so appending is safe even across a gap or an
+    # overlap. Truncating by default would throw away a day of prints to start a
+    # second one, which is never the intent.
+    resumed = 0
+    if out.exists() and not args.no_resume:
+        resumed = sum(1 for line in out.open(encoding="utf-8") if line.strip())
 
-    with out.open("w", encoding="utf-8") as fh:
+    if resumed:
+        # Record the rest of the window, not another full one. `--minutes` means
+        # "cover this much", and a resume that ignores what is already on disk
+        # silently produces a tape twice as long as asked for.
+        covered = _tape_seconds(out)
+        if covered >= seconds:
+            print(f"{out} already covers {covered / 60:,.1f} min "
+                  f"(>= {args.minutes:g}); nothing to record.")
+            return 0
+        seconds -= covered
+        print(f"resuming {out}: {resumed:,} frames, {covered / 60:,.1f} min covered, "
+              f"{seconds / 60:,.1f} min to go")
+
+    print(f"capturing {symbol} from {uri} for {seconds / 60:g} min -> {out}")
+
+    mode = "a" if resumed else "w"
+
+    with out.open(mode, encoding="utf-8") as fh:
         def on_frame(raw) -> None:
             nonlocal written
             fh.write("txt:" + str(raw) + "\n")
