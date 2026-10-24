@@ -28,7 +28,8 @@ from collections import Counter
 from pathlib import Path
 
 from orderflow import MarketCalendar, SessionChart, Side, TickGrid
-from orderflow.feed import FileTransport, OkxTradeFeed, parse_message
+from orderflow.feed import FileTransport, OkxTradeFeed
+from orderflow.feed.okx import parse_message
 
 
 def analyse(path: Path, tick: float = 0.1) -> dict:

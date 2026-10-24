@@ -1,9 +1,12 @@
-"""Live OKX feed to Delta India execution.
+"""Live trade-print feed to Delta India execution.
 
-    python3 live_feed.py --dry-run                    # offline synthetic feed, no socket
-    python3 live_feed.py --minutes 1 --record cap.txt # capture, no orders
-    python3 live_feed.py --minutes 1 --execute        # real orders (testnet)
-    python3 live_feed.py --minutes 1 --execute --live # real orders (mainnet)
+    python3 live_feed.py --dry-run                     # offline synthetic feed, no socket
+    python3 live_feed.py --minutes 1 --record cap.txt  # capture, no orders
+    python3 live_feed.py --minutes 1 --execute         # real orders (testnet)
+    python3 live_feed.py --minutes 1 --execute --live  # real orders (mainnet)
+
+The signal venue is selectable with `--venue`, and it defaults to **delta**:
+the same venue the orders go to. See the note below for why that is the default.
 
 Safety: the run is a **dry run unless `--execute` is passed**, and execution
 goes to **testnet unless `--live` is also passed**. Two flags must both be
@@ -16,14 +19,23 @@ Credentials come from the environment and are never read from a file argument:
 
     DELTA_API_KEY  DELTA_API_SECRET
 
-Note on what this program is
-----------------------------
-OKX is the *signal* venue and Delta India is the *execution* venue. These are
-two different contracts, quoted in two different currencies (USDT and USD), on
-two different order books, with a basis between them that moves. Acting on an
-OKX signal at Delta is therefore a **directional** position carrying basis risk,
-not a hedged arbitrage. `--basis-warn` refuses to trade when the two venues are
-far enough apart that the basis dominates the signal.
+Note on the signal venue
+------------------------
+Orders are always placed at **Delta India**. The signal can be read from either
+venue:
+
+* `--venue delta` (default) reads the same book the order lands on. Signal price
+  and fill price are the same price, so there is no basis to charge and a
+  backtest measures the strategy rather than the spread. Delta publishes fewer
+  prints than OKX (tens per minute rather than hundreds), so the footprint is
+  coarser.
+* `--venue okx` reads OKX, a far busier book. It is a different contract,
+  quoted in USDT rather than USD, on a different order book, with a basis
+  between the two that moves. Acting on an OKX signal at Delta is a
+  **directional** position carrying basis risk, not a hedged arbitrage.
+  `--basis-warn` refuses to trade when the venues are far enough apart that the
+  basis dominates the signal. This mode is kept, but it is no longer the default
+  and it is no longer what the backtest measures.
 """
 
 from __future__ import annotations
@@ -66,7 +78,14 @@ from orderflow.execution import (
     contracts_for_base,
     resolve_perpetual,
 )
-from orderflow.feed import FileTransport, OkxTradeFeed, ReplayTransport, record_frames
+from orderflow.feed import (
+    DELTA_PUBLIC_WS,
+    DeltaTradeFeed,
+    FileTransport,
+    OkxTradeFeed,
+    ReplayTransport,
+    record_frames,
+)
 from orderflow.feed.okx import PUBLIC_WS
 from orderflow.notify import (
     NullNotifier,
@@ -77,35 +96,40 @@ from orderflow.notify import (
     notifier_from_env,
 )
 
-DEFAULT_INSTRUMENTS = ["BTC-USDT-SWAP"]
+#: Delta's perpetual, which is the venue orders are placed on.
+DEFAULT_INSTRUMENTS = ["BTCUSD"]
+#: The instrument each venue quotes, used to build the chart's tick grid.
+VENUE_INSTRUMENTS = {
+    "delta": ("BTCUSD", DELTA_BTCUSD, DELTA_PUBLIC_WS, DeltaTradeFeed),
+    "okx": ("BTC-USDT-SWAP", OKX_BTC_USDT_SWAP, PUBLIC_WS, OkxTradeFeed),
+}
 
 #: How many synthetic trades `--dry-run` generates. Enough to produce a couple
 #: of bars and a non-zero cumulative delta, so the order path is exercised.
 DRY_RUN_TRADES = 600
 
 
-def make_transport(inst_ids, record_path=None, replay_path=None, max_seconds=None):
-    """Build the transport. Replay and record are the offline paths."""
+def make_transport(inst_ids, uri: str, replay_path=None):
+    """Build the transport. Replay is the offline path."""
     if replay_path is not None:
         return lambda: FileTransport(replay_path)
 
     def factory():
-
-
-        return _LiveOkxTransport(inst_ids, PUBLIC_WS)
+        return _LiveTransport(inst_ids, uri)
 
     return factory
 
 
-class _LiveOkxTransport:
-    """A real OKX socket. The only place in this package that opens one."""
+class _LiveTransport:
+    """A real market-data socket. The only place in this package that opens one."""
 
     is_live = True
 
-    def __init__(self, inst_ids, uri: str, timeout: float = 10.0) -> None:
+    def __init__(self, inst_ids, uri: str, timeout: float = 10.0, venue: str = "delta") -> None:
         self.inst_ids = list(inst_ids)
         self.uri = uri
         self.timeout = timeout
+        self.venue = venue
         self._ws = None
         self.recorded: list[str] = []
         #: Set once a recv fails. A closed socket returns nothing on every later
@@ -131,7 +155,10 @@ class _LiveOkxTransport:
 
     def heartbeat(self) -> None:
         if self._ws is not None:
-            self._ws.send("ping")
+            # OKX answers a bare "ping" with "pong"; Delta wants a JSON frame.
+            # Sending the wrong one keeps the TCP connection alive while the
+            # venue stops sending data, which reads as a quiet market.
+            self._ws.send("ping" if self.venue == "okx" else json.dumps({"type": "ping"}))
 
     def recv(self, timeout=None):
         if self._ws is None:
@@ -236,7 +263,7 @@ class Supervisor:
         max_consecutive_failures: int = 3,
         notifier=None,
         notify_mode: str = "paper",
-        venue: str = "OKX BTC-USDT-SWAP",
+        venue: str = "DELTA BTCUSD",
     ) -> None:
         self.client = client
         self.limits = limits
@@ -475,12 +502,17 @@ class Supervisor:
         return self.manager.state.realized_pnl_quote
 
 
-def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1) -> list[str]:
-    """A synthetic, deterministic two-sided tape, as OKX trade frames.
+def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1,
+                   venue: str = "delta") -> list[str]:
+    """A synthetic, deterministic two-sided tape, in the venue's frame shape.
 
     Exists so `--dry-run` is genuinely offline: the flag promises no socket, and
     this is what makes that true. `random.Random(seed)` rather than the module
     RNG, so two dry runs produce identical output.
+
+    The frame shape follows the venue, because the decoder is the venue's. An
+    OKX-shaped frame fed to the Delta decoder decodes to nothing, so a dry run
+    built from the wrong shape would report a healthy feed and zero trades.
     """
     import random
 
@@ -491,23 +523,21 @@ def dry_run_frames(inst_id: str, n: int = DRY_RUN_TRADES, seed: int = 1) -> list
     for i in range(n):
         price += rng.choice([-0.5, 0.0, 0.0, 0.5])
         side = "buy" if rng.random() > 0.45 else "sell"
-        frames.append(
-            json.dumps(
-                {
-                    "arg": {"channel": "trades", "instId": inst_id},
-                    "data": [
-                        {
-                            "instId": inst_id,
-                            "tradeId": str(i),
-                            "px": f"{price:.1f}",
-                            "sz": f"{rng.uniform(0.01, 0.4):.2f}",
-                            "side": side,
-                            "ts": str(ts_ms + i * 1000),
-                        }
-                    ],
-                }
-            )
-        )
+        size = rng.uniform(1.0, 40.0)  # contracts: Delta's unit
+        if venue == "okx":
+            frames.append(json.dumps({
+                "arg": {"channel": "trades", "instId": inst_id},
+                "data": [{"instId": inst_id, "tradeId": str(i), "px": f"{price:.1f}",
+                          "sz": f"{size / 100:.2f}", "side": side,
+                          "ts": str(ts_ms + i * 1000)}],
+            }))
+        else:
+            frames.append(json.dumps({
+                "type": "trades", "sy": inst_id, "p": f"{price:.1f}", "s": round(size, 3),
+                # `r` is the buyer's role: "t" is a buy aggressor, "m" a sell.
+                "r": "t" if side == "buy" else "m",
+                "t": (ts_ms + i * 1000) * 1000, "ts": (ts_ms + i * 1000) * 1000,
+            }))
     return frames
 
 
@@ -538,8 +568,13 @@ def _exit_on_sigterm() -> None:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="OKX feed -> Delta India execution")
-    ap.add_argument("--instruments", nargs="+", default=DEFAULT_INSTRUMENTS)
+    ap = argparse.ArgumentParser(description="trade-print feed -> Delta India execution")
+    ap.add_argument("--venue", choices=sorted(VENUE_INSTRUMENTS), default="delta",
+                    help="where the signal is read from. Delta (default) is the venue "
+                         "orders go to, so there is no basis between signal and fill; "
+                         "okx reads a busier book but introduces one")
+    ap.add_argument("--instruments", nargs="+", default=None,
+                    help="default: the venue's BTC perpetual")
     ap.add_argument("--minutes", type=float, default=0, help="0 means unbounded")
     ap.add_argument("--bar-seconds", type=float, default=60.0)
     ap.add_argument("--record", type=Path, default=None)
@@ -586,6 +621,11 @@ def main(argv=None) -> int:
                          "forever, which is what a service wants). Set a bound when "
                          "a silent feed is worse than a stopped one.")
     args = ap.parse_args(argv)
+
+    symbol, venue_instrument, venue_ws, feed_cls = VENUE_INSTRUMENTS[args.venue]
+    if args.instruments is None:
+        args.instruments = [symbol]
+    args.instruments = list(args.instruments)
 
     # Installed before any socket is opened, so a stop signal that arrives during
     # the run is handled the same way a Ctrl-C is.
@@ -640,7 +680,7 @@ def main(argv=None) -> int:
     elif args.replay is not None:
         print(f"venue      : replay of {args.replay}, no socket")
     else:
-        print(f"venue      : OKX {PUBLIC_WS}")
+        print(f"venue      : {args.venue.upper()} {venue_ws}")
     print(f"execution  : Delta {environment.value} "
           f"({'orders enabled' if args.execute else 'DRY RUN, no orders'})")
     if args.execute:
@@ -649,19 +689,19 @@ def main(argv=None) -> int:
         print(f"credentials: {creds!r}")
 
     cal = MarketCalendar()
-    chart = SessionChart(OKX_BTC_USDT_SWAP.grid(), cal, bar_seconds=args.bar_seconds)
+    chart = SessionChart(venue_instrument.grid(), cal, bar_seconds=args.bar_seconds)
 
     capture: list[str] = []
     transport_holder = {}
 
     def factory():
         if args.dry_run:
-            return ReplayTransport(dry_run_frames(args.instruments[0]))
-        t = make_transport(args.instruments, replay_path=args.replay)()
+            return ReplayTransport(dry_run_frames(args.instruments[0], venue=args.venue))
+        t = make_transport(args.instruments, venue_ws, replay_path=args.replay)()
         transport_holder["t"] = t
         return t
 
-    feed = OkxTradeFeed(args.instruments, factory)
+    feed = feed_cls(args.instruments, factory)
     max_seconds = args.minutes * 60.0 if args.minutes > 0 else None
 
     # The feed is run exactly once, and the supervisor is attached to that one
@@ -724,7 +764,11 @@ def main(argv=None) -> int:
         # Only meaningful on a live feed: a replayed capture holds historical
         # prices, so comparing them to today's mark price measures the elapsed
         # time, not the basis.
-        if args.basis_warn > 0 and not offline:
+        # The basis gate only means anything when the signal and the fill are on
+        # different venues. Reading the signal on Delta and filling on Delta has
+        # no basis to check, and comparing a price to itself would pass trivially
+        # while looking like a real guard.
+        if args.basis_warn > 0 and not offline and args.venue != "delta":
             def gate(price: float, _limit=args.basis_warn):
                 try:
                     delta_px = delta_mark_price(BASE_URLS[environment], DELTA_BTCUSD.symbol)
@@ -735,7 +779,7 @@ def main(argv=None) -> int:
                 b = basis_pct(price, delta_px)
                 if abs(b) > _limit:
                     return False, (f"|basis| {abs(b):.3f}% exceeds {_limit:g}% "
-                                   f"(OKX {price:g} vs Delta {delta_px:g})")
+                                   f"({args.venue.upper()} {price:g} vs Delta {delta_px:g})")
                 return True, f"basis {b:+.3f}%"
 
         if not args.execute:
@@ -762,6 +806,7 @@ def main(argv=None) -> int:
             max_consecutive_failures=args.max_order_failures,
             notifier=notifier,
             notify_mode=notify_mode,
+            venue=f"{args.venue.upper()} {args.instruments[0]}",
         )
         if supervisor.manager.state.day_key:
             print(f"risk day     : {supervisor.manager.state.day_key} "

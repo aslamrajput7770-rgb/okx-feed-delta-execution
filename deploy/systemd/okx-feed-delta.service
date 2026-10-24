@@ -1,5 +1,5 @@
 [Unit]
-Description=OKX feed -> Delta India execution (paper by default)
+Description=Signal feed -> Delta India execution (paper by default)
 Documentation=file:///opt/okx-feed-delta/AGENTS.md
 # The venue is the dependency that matters. Without it the unit would start,
 # fail to resolve a product, and restart in a loop that looks like a crash.

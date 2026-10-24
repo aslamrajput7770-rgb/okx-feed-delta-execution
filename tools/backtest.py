@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backtest the signal loop over a recorded OKX tape.
+"""Backtest the signal loop over a recorded tape.
 
 What is real here, and what is simulated
 ----------------------------------------
@@ -22,8 +22,13 @@ of the shipped rules is the only kind worth running.
     python3 tools/backtest.py --tape tape_7d.txt --stop-loss 0.5 --take-profit 1.0
     python3 tools/backtest.py --tape tape_7d.txt --grid-stop 0.25:1.0:0.25
 
-Fees default to Delta India's taker rate; the basis between OKX and Delta is
-charged on entry because the signal is taken on one venue and filled on another.
+Fees default to Delta India's taker rate.
+
+The venue matters and is selectable. Reading the signal on Delta - the venue the
+order is placed on - removes the basis entirely, so the result is about the
+strategy rather than about the spread between two venues. Reading it on OKX and
+filling at Delta is the cross-venue mode, where the basis is a real cost and
+`--basis-bps` charges it.
 """
 
 from __future__ import annotations
@@ -42,8 +47,9 @@ from orderflow.core import Side, Trade  # noqa: E402
 from orderflow.execution.delta_client import Environment, OrderResult  # noqa: E402
 from orderflow.execution.risk import ExitReason, RiskLimits  # noqa: E402
 from orderflow.execution.sizing import DELTA_PERP_RULES  # noqa: E402
-from orderflow.feed import parse_message  # noqa: E402
-from orderflow.feed.okx import TradeEvent  # noqa: E402
+from orderflow.feed import base as feed_base  # noqa: E402
+from orderflow.feed.delta import parse_message as parse_delta  # noqa: E402
+from orderflow.feed.okx import parse_message as parse_okx  # noqa: E402
 from orderflow.instruments import DELTA_BTCUSD, OKX_BTC_USDT_SWAP  # noqa: E402
 from orderflow.session_chart import SessionChart  # noqa: E402
 from orderflow.session import MarketCalendar  # noqa: E402
@@ -54,6 +60,18 @@ import live_feed  # noqa: E402
 
 #: One Delta contract is 0.001 BTC. Used to express results in contracts.
 CONTRACT_BTC = 0.001
+
+#: Venue -> (frame decoder, the instrument whose tick grid the chart uses).
+#:
+#: The decoder must match the venue the tape was recorded from. Feeding Delta
+#: frames to the OKX decoder is not a near-miss: it returns no prints at all,
+#: because the OKX decoder keys on `arg.channel` and Delta sends `type`.
+VENUES = {
+    "delta": (parse_delta, DELTA_BTCUSD),
+    "okx": (parse_okx, OKX_BTC_USDT_SWAP),
+}
+
+TradeEvent = feed_base.TradeEvent
 
 
 @dataclass
@@ -218,12 +236,13 @@ class Result:
         return (self.end_price - self.start_price) / self.start_price * 100.0
 
 
-def load_tape(path: Path) -> list[TradeEvent]:
-    """Decode a `FileTransport` tape into prints, deduplicated on tradeId.
+def load_tape(path: Path, venue: str = "delta") -> list[TradeEvent]:
+    """Decode a `FileTransport` tape into prints, deduplicated on trade id.
 
     The same decode path a live socket uses, so a tape cannot smuggle in a
     shape the live feed would reject.
     """
+    decoder, _ = VENUES[venue]
     seen: set[str] = set()
     events: list[TradeEvent] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -232,8 +251,8 @@ def load_tape(path: Path) -> list[TradeEvent]:
             continue
         payload = line[4:] if line.startswith("txt:") else None
         if payload is None:
-            continue  # binary frames are not produced by the REST fetcher
-        for ev in parse_message(payload):
+            continue  # binary frames are not produced by either venue
+        for ev in decoder(payload):
             if ev.trade_id in seen:
                 continue
             seen.add(ev.trade_id)
@@ -249,7 +268,7 @@ def run_backtest(
     costs: Costs,
     basis_mode: bool,
     use_gate: bool,
-    telegram_every_signal: bool = False,
+    venue: str = "delta",
     verbose: bool = False,
 ) -> Result:
     """Drive the shipped supervisor over a decoded tape.
@@ -298,7 +317,8 @@ def run_backtest(
     )
 
     cal = MarketCalendar()
-    chart = SessionChart(OKX_BTC_USDT_SWAP.grid(), cal, bar_seconds=30.0)
+    _, chart_instrument = VENUES[venue]
+    chart = SessionChart(chart_instrument.grid(), cal, bar_seconds=30.0)
     running = RunningDelta(chart)
 
     result = Result()
@@ -520,6 +540,8 @@ def _parse_triple(s: str) -> tuple[float, float, float]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Backtest the shipped signal loop over a tape.")
     ap.add_argument("--tape", type=Path, required=True)
+    ap.add_argument("--venue", choices=sorted(VENUES), default="delta",
+                    help="which venue recorded the tape (default: delta)")
     ap.add_argument("--stop-loss", type=float, default=1.0, help="percent, 0 disables")
     ap.add_argument("--take-profit", type=float, default=2.0, help="percent, 0 disables")
     ap.add_argument("--max-hold", type=float, default=3600.0, help="seconds, 0 disables")
@@ -528,7 +550,8 @@ def main() -> int:
     ap.add_argument("--order-size", type=float, default=0.001, help="base currency per trade")
     ap.add_argument("--fee-bps", type=float, default=5.0, help="per side, on notional")
     ap.add_argument("--slippage-bps", type=float, default=2.0, help="per side")
-    ap.add_argument("--basis-bps", type=float, default=0.0, help="entry only; enables basis mode")
+    ap.add_argument("--basis-bps", type=float, default=0.0,
+                    help="entry only, cross-venue mode; charged once on entry")
     ap.add_argument("--no-gate", action="store_true", help="disable the basis entry gate")
     ap.add_argument("--grid-stop", type=_parse_triple, default=None,
                     help="sweep stop:target:step, e.g. 0.25:1.0:0.25")
@@ -541,12 +564,12 @@ def main() -> int:
         print(f"no such tape: {args.tape}", file=sys.stderr)
         return 2
 
-    events = load_tape(args.tape)
+    events = load_tape(args.tape, args.venue)
     if not events:
-        print("the tape decoded to no prints", file=sys.stderr)
+        print(f"the tape decoded to no prints with the {args.venue} decoder", file=sys.stderr)
         return 1
     span_h = (events[-1].ts_ms - events[0].ts_ms) / 3_600_000.0
-    print(f"tape: {args.tape}  {len(events):,} prints over {span_h:.2f} h")
+    print(f"tape: {args.tape}  [{args.venue}]  {len(events):,} prints over {span_h:.2f} h")
 
     costs = Costs(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps, basis_bps=args.basis_bps)
     results = []
@@ -568,7 +591,7 @@ def main() -> int:
             )
             r = run_backtest(events, limits, args.order_size, costs,
                              basis_mode=args.basis_bps > 0, use_gate=not args.no_gate,
-                             verbose=args.verify_delta)
+                             venue=args.venue, verbose=args.verify_delta)
             net = r.net_pnl
             print(f"  stop {stop:5.2f}%  target {target:5.2f}%  "
                   f"trades {len(r.trades):5d}  net {net:+10.2f}  dd {r.max_drawdown():+9.2f}")
@@ -587,7 +610,7 @@ def main() -> int:
         )
         r = run_backtest(events, limits, args.order_size, costs,
                          basis_mode=args.basis_bps > 0, use_gate=not args.no_gate,
-                         verbose=args.verify_delta)
+                         venue=args.venue, verbose=args.verify_delta)
         results.append(report(r, limits, args.order_size, costs, "shipped rules"))
 
     if args.json_out:

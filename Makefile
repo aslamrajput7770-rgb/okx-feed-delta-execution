@@ -5,8 +5,13 @@
 PY := ./.venv/bin/python
 PAPER_MINUTES ?= 5
 PAPER_ORDER_SIZE ?= 0.001
+# Which venue the signal is read from. delta = the venue orders go to.
+SIGNAL_VENUE ?= delta
+TAPE_MINUTES ?= 1440
+TAPE_OUT ?= tape.txt
+TAPE ?= tape.txt
 
-.PHONY: help setup test dry preflight paper paper-tg telegram-check live feed diagnose service-install service-start service-logs service-stop clean
+.PHONY: help setup test dry preflight paper paper-tg telegram-check live feed tape backtest diagnose service-install service-start service-logs service-stop clean
 
 help:
 	@echo "make setup      install dependencies and run the tests"
@@ -53,6 +58,16 @@ live:
 
 feed:
 	$(PY) live_feed.py --minutes $(PAPER_MINUTES) --record capture.txt
+
+# Delta keeps no trade-print history - its REST trades endpoint returns the
+# latest 50 prints and ignores start/end - so a tape has to be recorded while
+# it happens. One day is the default because that is the shortest window
+# that contains more than one regime.
+tape:
+	$(PY) tools/capture.py --venue $(SIGNAL_VENUE) --minutes $(TAPE_MINUTES) --out $(TAPE_OUT)
+
+backtest:
+	$(PY) tools/backtest.py --tape $(TAPE) --venue $(SIGNAL_VENUE)
 
 diagnose:
 	$(PY) diagnose_okx.py capture.txt

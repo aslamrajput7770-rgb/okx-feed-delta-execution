@@ -12,13 +12,13 @@ import json
 import pytest
 
 from orderflow import MarketCalendar, SessionChart, Side, TickGrid
+from orderflow.feed.okx import parse_message
 from orderflow.feed import (
     FileTransport,
     OkxTradeFeed,
     ProtocolError,
     ReplayTransport,
     is_control,
-    parse_message,
     record_frames,
     side_from_taker,
     subscribe_message,

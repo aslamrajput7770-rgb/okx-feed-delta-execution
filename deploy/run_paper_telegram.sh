@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Paper trade with signal delivery: OKX feed in, signals to Telegram, nothing
+# Paper trade with signal delivery: signal feed in, signals to Telegram, nothing
 # sent to Delta.
 #
 #   ./deploy/run_paper_telegram.sh              # 5 minutes

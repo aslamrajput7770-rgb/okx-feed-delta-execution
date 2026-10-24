@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from orderflow.feed import OkxTradeFeed
-from orderflow.feed import okx as okx_module
+from orderflow.feed import base as feed_base
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -37,7 +37,7 @@ def no_sleep(monkeypatch):
     that would make a limit-reached test take a minute. The loop itself is
     untouched, so the code path under test is the real one.
     """
-    monkeypatch.setattr(okx_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(feed_base.time, "sleep", lambda _seconds: None)
 
 
 class ScriptedTransport:

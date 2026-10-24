@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run the strategy in paper mode: OKX feed in, Delta order resolved and sized,
-# nothing sent.
+# Run the strategy in paper mode: the signal feed in, the Delta order resolved
+# and sized, nothing sent.
 #
 #   ./deploy/run_paper.sh              # 5 minutes, live host, no orders
 #   ./deploy/run_paper.sh 30 --record paper.json
@@ -26,4 +26,5 @@ if [[ -z "${DELTA_API_KEY:-}" || -z "${DELTA_API_SECRET:-}" ]]; then
 fi
 
 exec "$repo/.venv/bin/python" "$repo/live_feed.py" \
-    --live --minutes "$minutes" --bar-seconds 30 --order-size "${PAPER_ORDER_SIZE:-0.001}" "$@"
+    --live --minutes "$minutes" --bar-seconds 30 --order-size "${PAPER_ORDER_SIZE:-0.001}" \
+    --venue "${SIGNAL_VENUE:-delta}" "$@"

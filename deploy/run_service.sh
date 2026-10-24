@@ -34,8 +34,11 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
     exit 1
 fi
 
+# The signal venue defaults to delta: the same venue the orders go to, so the
+# signal price and the fill price are the same price and there is no basis to
+# pay. Set SIGNAL_VENUE=okx in service.env to read the busier OKX book instead.
 args=(--live --minutes "$minutes" --bar-seconds "${BAR_SECONDS:-30}"
-      --order-size "$order_size" --telegram)
+      --order-size "$order_size" --telegram --venue "${SIGNAL_VENUE:-delta}")
 
 if [[ "${TELEGRAM_EVERY_SIGNAL:-0}" == "1" ]]; then
     args+=(--telegram-every-signal)

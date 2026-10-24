@@ -20,16 +20,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 import backtest  # noqa: E402
 import live_feed  # noqa: E402
+from orderflow.core import Side  # noqa: E402
 from orderflow.execution.risk import RiskLimits  # noqa: E402
 
 
-def frame(rows, inst="BTC-USDT-SWAP"):
-    return "txt:" + json.dumps({"arg": {"channel": "trades", "instId": inst}, "data": rows})
+#: Delta is the default venue, so the test tapes are Delta frames.
+#:
+#: `r` is the buyer's role, and the mapping is the one the feed uses:
+#: "buy" (the aggressor bought) is `r="t"`, "sell" is `r="m"`. A test that
+#: wants a rejected side passes it straight through.
+_ROLE = {"buy": "t", "sell": "m"}
+
+
+def frame(rows, inst="BTCUSD"):
+    """One Delta trade frame per row, joined as tape lines."""
+    lines = []
+    for r in rows:
+        d = {
+            "type": "trades",
+            "sy": inst,
+            "p": str(r["px"]),
+            "s": r["sz"],
+            "r": _ROLE.get(r["side"], r["side"]),
+            # Delta's trade time is microseconds; the helper takes milliseconds
+            # so the tests read in the same unit the engine uses.
+            "t": int(r["ts"]) * 1000 + int(r["trade_id"]),
+            "ts": int(r["ts"]) * 1000,
+        }
+        lines.append("txt:" + json.dumps(d))
+    return "\n".join(lines)
 
 
 def row(trade_id, px, sz, side, ts):
-    return {"instId": "BTC-USDT-SWAP", "tradeId": str(trade_id), "px": str(px),
-            "sz": str(sz), "side": side, "ts": str(ts)}
+    return {"trade_id": trade_id, "px": px, "sz": sz, "side": side, "ts": ts}
 
 
 def write_tape(path: Path, rows) -> Path:
@@ -48,8 +71,34 @@ class TestTapeDecoding:
         p = write_tape(tmp_path / "t.txt", [row(1, 100.0, 1.0, "buy", 1000)])
         events = backtest.load_tape(p)
         assert len(events) == 1
-        assert events[0].trade_id == "1"
+        # Delta sends no trade id; the microsecond trade time is the key.
+        assert events[0].trade_id == "1000001"
+        assert events[0].ts_ms == 1000
         assert events[0].price == 100.0
+        assert events[0].side is Side.BUY
+
+    def test_the_venue_selects_the_decoder(self, tmp_path):
+        """A Delta tape through the OKX decoder yields nothing, not garbage.
+
+        The two decoders key on different fields, so the choice is not
+        cosmetic - and a silent zero-print result is the failure to catch.
+        """
+        delta_tape = write_tape(tmp_path / "d.txt", [row(1, 100.0, 1.0, "buy", 1000)])
+        assert len(backtest.load_tape(delta_tape, "delta")) == 1
+        assert len(backtest.load_tape(delta_tape, "okx")) == 0
+
+    def test_an_okx_tape_still_decodes_under_the_okx_venue(self, tmp_path):
+        """The cross-venue mode must keep working after the venue split."""
+        okx = "txt:" + json.dumps({
+            "arg": {"channel": "trades", "instId": "BTC-USDT-SWAP"},
+            "data": [{"instId": "BTC-USDT-SWAP", "tradeId": "7", "px": "100.0",
+                      "sz": "1.0", "side": "buy", "ts": "1000"}],
+        })
+        p = tmp_path / "o.txt"
+        p.write_text(okx + "\n", encoding="utf-8")
+        events = backtest.load_tape(p, "okx")
+        assert len(events) == 1
+        assert events[0].trade_id == "7"
 
     def test_duplicate_trade_ids_are_dropped(self, tmp_path):
         """A reconnect replays prints; a backtest must not double-count them."""
@@ -187,7 +236,7 @@ class TestRunningDeltaMatchesTheChart:
 
     def test_the_carried_delta_equals_the_chart_at_every_print(self, tmp_path):
         from orderflow.core import Trade
-        from orderflow.instruments import OKX_BTC_USDT_SWAP
+        from orderflow.instruments import DELTA_BTCUSD
         from orderflow.session import MarketCalendar
         from orderflow.session_chart import SessionChart
 
@@ -199,7 +248,7 @@ class TestRunningDeltaMatchesTheChart:
             rows.append(row(i + 1, 100.0 + (i % 7), 1.0 + (i % 5), side, day * 1000))
 
         events = backtest.load_tape(tape_with(tmp_path, rows))
-        chart = SessionChart(OKX_BTC_USDT_SWAP.grid(), MarketCalendar(), bar_seconds=30.0)
+        chart = SessionChart(DELTA_BTCUSD.grid(), MarketCalendar(), bar_seconds=30.0)
         running = backtest.RunningDelta(chart)
 
         for ev in events:
@@ -211,7 +260,7 @@ class TestRunningDeltaMatchesTheChart:
 
     def test_the_delta_resets_when_the_day_rolls(self, tmp_path):
         from orderflow.core import Trade
-        from orderflow.instruments import OKX_BTC_USDT_SWAP
+        from orderflow.instruments import DELTA_BTCUSD
         from orderflow.session import MarketCalendar
         from orderflow.session_chart import SessionChart
 
@@ -221,7 +270,7 @@ class TestRunningDeltaMatchesTheChart:
         rows += [row(100 + i, 100.0, 1.0, "buy", (1_700_100_000 + i * 60) * 1000) for i in range(5)]
 
         events = backtest.load_tape(tape_with(tmp_path, rows))
-        chart = SessionChart(OKX_BTC_USDT_SWAP.grid(), MarketCalendar(), bar_seconds=30.0)
+        chart = SessionChart(DELTA_BTCUSD.grid(), MarketCalendar(), bar_seconds=30.0)
         running = backtest.RunningDelta(chart)
         values = []
         for ev in events:

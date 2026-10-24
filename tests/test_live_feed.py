@@ -14,6 +14,40 @@ import live_feed
 from live_feed import DRY_RUN_TRADES, dry_run_frames, main, order_side
 
 
+# ------------------------------------------------------- signal venue choice
+class TestTheSignalVenue:
+    """Delta is the default, and the choice must actually reach the wiring."""
+
+    def test_delta_is_the_default(self):
+        """The venue orders go to is the venue the signal should come from."""
+        symbol, instrument, ws, feed_cls = live_feed.VENUE_INSTRUMENTS["delta"]
+        assert symbol == "BTCUSD"
+        assert instrument is live_feed.DELTA_BTCUSD
+        assert "public-socket" in ws
+
+    def test_both_venues_are_available(self):
+        assert set(live_feed.VENUE_INSTRUMENTS) == {"delta", "okx"}
+
+    def test_an_unknown_venue_is_refused(self):
+        with pytest.raises(SystemExit):
+            main(["--dry-run", "--venue", "binance"])
+
+    def test_the_okx_mode_is_still_reachable(self, capsys):
+        """Cross-venue mode is kept, not deleted."""
+        rc = main(["--dry-run", "--venue", "okx", "--order-size", "0.001"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "would trade" in out
+
+    def test_the_delta_dry_run_decodes_to_trades(self, capsys):
+        """A dry run in the wrong frame shape reports a healthy feed and no
+        trades. Delta is the default, so its tape must actually decode."""
+        rc = main(["--dry-run", "--order-size", "0.001"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "trades=600" in out
+
+
 # ------------------------------------------------------------------ dry run
 class TestDryRun:
     def test_dry_run_is_offline_and_terminates(self, capsys):
@@ -37,8 +71,8 @@ class TestDryRun:
         assert "risk         :" in out
 
     def test_dry_run_frames_are_deterministic(self):
-        a = dry_run_frames("BTC-USDT-SWAP")
-        b = dry_run_frames("BTC-USDT-SWAP")
+        a = dry_run_frames("BTCUSD")
+        b = dry_run_frames("BTCUSD")
         assert a == b
         assert len(a) == DRY_RUN_TRADES
 
@@ -46,8 +80,26 @@ class TestDryRun:
         """A one-sided tape would make the side mapping look correct by accident."""
         import json
 
-        sides = {json.loads(f)["data"][0]["side"] for f in dry_run_frames("BTC-USDT-SWAP")}
-        assert sides == {"buy", "sell"}
+        # `r` is the buyer's role, so both roles must appear.
+        roles = {json.loads(f)["r"] for f in dry_run_frames("BTCUSD")}
+        assert roles == {"t", "m"}
+
+    def test_the_dry_run_tape_decodes_with_the_venue_it_claims(self):
+        """The synthetic frames must be readable by that venue's own decoder.
+
+        A dry run in the wrong frame shape reports a healthy feed and zero
+        trades, which is the worst possible output from an offline check.
+        """
+        from orderflow.feed import DeltaTradeFeed, OkxTradeFeed
+        from orderflow.feed.base import ReplayTransport
+
+        for venue, inst, cls in (("delta", "BTCUSD", DeltaTradeFeed),
+                                 ("okx", "BTC-USDT-SWAP", OkxTradeFeed)):
+            feed = cls([inst], lambda v=venue, i=inst: ReplayTransport(
+                dry_run_frames(i, n=10, venue=v)))
+            stats = feed.run(lambda *_: None)
+            assert stats.trades == 10, f"{venue} dry-run tape decoded to {stats.trades}"
+            assert stats.protocol_errors == 0
 
     def test_dry_run_and_execute_are_contradictory(self, capsys):
         rc = main(["--dry-run", "--execute", "--order-size", "0.001"])
