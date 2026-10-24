@@ -126,8 +126,12 @@ def main() -> int:
             nonlocal written
             fh.write("txt:" + str(raw) + "\n")
             written += 1
-            if written % 100 == 0:
-                fh.flush()
+            # Every frame, not every hundred. This is a page-cache write, not an
+            # fsync, so it is cheap; and the module docstring promises it, which
+            # matters because the promise is the reason the tool exists. A
+            # batched flush loses the last 100 frames on a crash - about two
+            # minutes here, and far more on a busier venue.
+            fh.flush()
 
         feed = feed_cls([symbol], lambda: LiveTransport(uri))
         stats = feed.run(
